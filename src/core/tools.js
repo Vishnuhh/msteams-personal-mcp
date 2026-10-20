@@ -39,6 +39,19 @@ export function registerTeamsTools(server, client) {
     },
   }, wrap(({ conversationId, limit, since, before, includeSystem }) => client.getMessages(conversationId, { limit, since, before, includeSystem })));
 
+  server.registerTool('teams_get_message', {
+    description: 'Get one message by id with full text, sender, reply/quote, mentions, reactions, files and links.',
+    inputSchema: { conversationId: z.string().min(1), messageId: z.string().min(1) },
+  }, wrap(({ conversationId, messageId }) => client.getMessage(conversationId, messageId)));
+
+  server.registerTool('teams_get_mentions', {
+    description: 'Messages where someone @mentioned the signed-in user, newest first, across recent chats.',
+    inputSchema: {
+      since: timeArg('Look back to this time (default "7d")'),
+      chats: z.number().int().min(1).max(30).optional().describe('How many recent chats to scan (default 20)'),
+    },
+  }, wrap(({ since, chats }) => client.getMentions({ since, chats })));
+
   server.registerTool('teams_get_unread', {
     description: 'Unread conversations with the messages received after the user\'s read position (oldest first). Read-only; does not mark anything as read.',
     inputSchema: { chats: z.number().int().min(1).max(100).optional().describe('How many recent chats to check (default 50)') },
@@ -96,4 +109,69 @@ export function registerTeamsTools(server, client) {
       text: z.string().min(1).describe('Plain text; blank lines become paragraphs; @[Name](mri) becomes a mention'),
     },
   }, wrap(({ conversationId, text }) => client.sendMessage(conversationId, text)));
+
+  server.registerTool('teams_reply_to_message', {
+    description: 'SEND a reply that quotes a specific message (shows as a Teams reply). Only when the user explicitly asked to reply with this text. ' +
+      'Supports @[Name](mri) mentions like teams_send_message.',
+    inputSchema: {
+      conversationId: z.string().min(1),
+      messageId: z.string().min(1).describe('The message being replied to'),
+      text: z.string().min(1),
+    },
+  }, wrap(({ conversationId, messageId, text }) => client.replyToMessage(conversationId, messageId, text)));
+
+  server.registerTool('teams_edit_message', {
+    description: 'Edit one of the signed-in user\'s own messages, replacing its text (visible to the chat as edited). Only when the user asked. Replies keep their quote.',
+    inputSchema: {
+      conversationId: z.string().min(1),
+      messageId: z.string().min(1),
+      text: z.string().min(1).describe('New full text; @[Name](mri) mentions supported'),
+    },
+  }, wrap(({ conversationId, messageId, text }) => client.editMessage(conversationId, messageId, text)));
+
+  server.registerTool('teams_delete_message', {
+    description: 'Delete one of the signed-in user\'s own messages (shows as deleted in the chat). Only when the user explicitly asked.',
+    inputSchema: { conversationId: z.string().min(1), messageId: z.string().min(1) },
+  }, wrap(({ conversationId, messageId }) => client.deleteMessage(conversationId, messageId)));
+}
+
+const userPrompt = (text) => ({ messages: [{ role: 'user', content: { type: 'text', text } }] });
+
+/** One-click workflows (MCP prompts), shared by both servers. */
+export function registerTeamsPrompts(server) {
+  server.registerPrompt('catch_me_up', {
+    title: 'Catch me up on Teams',
+    description: 'Unread messages and @mentions, summarized, with what needs a reply.',
+  }, () => userPrompt(
+    'Catch me up on my Microsoft Teams (personal). Use teams_get_unread and teams_get_mentions (since "24h").\n' +
+    '1. Group by chat. For each, give a one-line summary and list anything that asks me something or needs action.\n' +
+    '2. End with "Needs your reply" (most urgent first) and "FYI only".\n' +
+    '3. For each item that needs a reply, suggest a short reply and a fitting reaction (from teams_list_reaction_emojis).\n' +
+    'Do not send, react or mark anything as read until I confirm.',
+  ));
+
+  server.registerPrompt('draft_reply', {
+    title: 'Draft a Teams reply',
+    description: 'Read a chat and draft a reply in your style; sends only after you approve.',
+    argsSchema: {
+      chat: z.string().describe('Chat or person name, e.g. "DevOps" or "Prasaanth"'),
+      intent: z.string().optional().describe('What you want to say (optional)'),
+    },
+  }, ({ chat, intent }) => userPrompt(
+    `Find my Teams chat "${chat}" (teams_find_chat) and read its last 30 messages (teams_get_messages).\n` +
+    'Then draft a reply in my usual tone. Look at my own messages in the chat to match my style and length.\n' +
+    (intent ? `What I want to say: ${intent}\n` : 'Work out what most needs a response.\n') +
+    'If someone should be @mentioned, use teams_get_chat_members for the right mention token. If replying to a specific message works better, say which one.\n' +
+    'Show me the draft (and a suggested reaction, if fitting). Send only after I say "send" (teams_send_message or teams_reply_to_message).',
+  ));
+
+  server.registerPrompt('daily_digest', {
+    title: 'Daily Teams digest',
+    description: 'What happened today: key discussions, what you said, and what is waiting on you.',
+  }, () => userPrompt(
+    'Give me today\'s Microsoft Teams digest. Use teams_list_chats, then teams_get_messages with since="24h" for chats active today, ' +
+    'plus teams_get_my_recent_messages (since "24h") and teams_get_mentions (since "24h").\n' +
+    'Sections: "Key discussions" (per chat, 1-2 lines), "Decisions & action items" (who/what), "What I said", "Waiting on me". ' +
+    'Keep it under 300 words. Read-only: don\'t send or change anything.',
+  ));
 }

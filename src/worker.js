@@ -12,11 +12,11 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import { CfWorkerJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/cfworker';
 import { requestDeviceCode, pollDeviceCode, exchangeForSkypeToken } from './core/oauth.js';
 import { createTeamsClient } from './core/teams.js';
-import { registerTeamsTools, wrap } from './core/tools.js';
+import { registerTeamsTools, registerTeamsPrompts, wrap } from './core/tools.js';
 import { newSecret, sha256Hex, sealJson, openJson } from './remote/crypto.js';
 import { renderPage } from './remote/page.js';
 
-const VERSION = '0.3.0';
+const VERSION = '0.4.0';
 const USER_INFO = 'user-data-v1';
 const LOGIN_INFO = 'login-data-v1';
 
@@ -155,6 +155,7 @@ async function handleMcp(request, env, url) {
   }));
 
   registerTeamsTools(server, client);
+  registerTeamsPrompts(server);
 
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   await server.connect(transport);

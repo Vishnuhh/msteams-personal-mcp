@@ -1,6 +1,6 @@
 {
   "name": "msteams-personal-mcp",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "MCP server for Microsoft Teams personal accounts (teams.live.com) — local (stdio) or remote (Cloudflare Workers)",
   "type": "module",
   "main": "src/index.js",

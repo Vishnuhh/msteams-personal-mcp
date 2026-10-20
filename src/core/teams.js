@@ -14,12 +14,14 @@ const MAX_TITLE_LOOKUPS = 20;
 
 // Module-level caches survive across requests in the same process / Worker isolate.
 const contactsCache = new Map(); // selfMri -> { at, names: Map<mri, displayName> }
+const selfNameCache = new Map(); // selfMri -> the user's own display name
 // "<selfMri>|<1:1 conversationId>" -> other member's mri. Keyed per user: on the shared server both
 // people in a 1:1 chat may be users, and each must see the *other* person.
 const partnerCache = new Map();
 
 export function stripHtml(html = '') {
   return html
+    .replace(/<img\b[^>]*\balt="([^"]*)"[^>]*>/gi, '$1') // inline emoji images carry the emoji in alt
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/(p|div|li)>/gi, '\n')
     .replace(/<li[^>]*>/gi, '- ')
@@ -55,7 +57,43 @@ function conversationType(c) {
 }
 
 function isUserMessage(m) {
-  return /^(RichText|Text)/.test(m.messagetype || '') && !m.properties?.deletetime && Boolean(stripHtml(m.content));
+  if (m.properties?.deletetime) return false;
+  if (m.messagetype === 'Event/Call') return true;
+  return /^(RichText|Text)/.test(m.messagetype || '') && Boolean(stripHtml(m.content));
+}
+
+const REPLY_RE = /<blockquote[^>]*itemtype="http:\/\/schema\.skype\.com\/Reply"[^>]*>([\s\S]*?)<\/blockquote>/i;
+
+/** Splits a reply into the quoted part and the reply body. */
+export function parseReply(content = '') {
+  const m = content.match(REPLY_RE);
+  if (!m) return null;
+  const inner = m[1];
+  const quotedId = (m[0].match(/itemid="([^"]+)"/) || [])[1] || null;
+  const author = inner.match(/<strong[^>]*itemid="([^"]+)"[^>]*>([\s\S]*?)<\/strong>/i);
+  const preview = (inner.match(/<p[^>]*itemprop="preview"[^>]*>([\s\S]*?)<\/p>/i) || [])[1] || '';
+  return {
+    quoted: { messageId: quotedId, fromId: author?.[1] || null, from: author ? stripHtml(author[2]) : null, preview: stripHtml(preview) },
+    body: content.replace(REPLY_RE, ''),
+  };
+}
+
+export function parseCall(content = '') {
+  const tag = (name) => (content.match(new RegExp(`<${name}>([\\s\\S]*?)</${name}>`, 'i')) || [])[1];
+  const people = [...content.matchAll(/<part\b[\s\S]*?<\/part>/gi)].map((p) => {
+    const name = (p[0].match(/<displayName>([\s\S]*?)<\/displayName>/i) || p[0].match(/<name>([\s\S]*?)<\/name>/i) || [])[1];
+    const dur = Number((p[0].match(/<duration>([\d.]+)<\/duration>/i) || [])[1]);
+    return { name: name ? stripHtml(name) : null, seconds: Number.isFinite(dur) ? dur : null };
+  });
+  const secs = Math.max(0, ...people.map((p) => p.seconds || 0));
+  const status = /<ended\s*\/>/i.test(content) ? 'ended' : /<missed\s*\/>/i.test(content) ? 'missed' : (tag('callEventType') || 'call');
+  const length = secs ? `${Math.floor(secs / 60)}m ${Math.round(secs % 60)}s` : null;
+  return {
+    status,
+    durationSeconds: secs || null,
+    participants: people.map((p) => p.name).filter(Boolean),
+    text: `📞 Call ${status}${length ? ` · ${length}` : ''}${people.length ? ` · ${people.map((p) => p.name).filter(Boolean).join(', ')}` : ''}`,
+  };
 }
 
 function parseJsonish(v) {
@@ -181,6 +219,19 @@ export function createTeamsClient(getSkypeToken) {
     return names;
   }
 
+  /** The signed-in user's display name, taken from their own messages (cached). */
+  async function selfName() {
+    const self = await me();
+    if (selfNameCache.has(self)) return selfNameCache.get(self);
+    let name = null;
+    for (const c of await rawConversations(50)) {
+      const lm = c.lastMessage;
+      if (lm && mriFromUrl(lm.from) === self && lm.imdisplayname && !looksLikeId(lm.imdisplayname)) { name = lm.imdisplayname; break; }
+    }
+    if (name) selfNameCache.set(self, name);
+    return name || '';
+  }
+
   async function threadMembers(conversationId) {
     const t = await request(`${CHATSVC_ROOT}/threads/${encodeURIComponent(conversationId)}?view=msnp24Equivalent`);
     return (t.members || []).filter((m) => !m.hidden).map((m) => ({ mri: m.id, role: m.role || null }));
@@ -282,6 +333,8 @@ export function createTeamsClient(getSkypeToken) {
 
   function formatMessage(m, self, names) {
     const from = mriFromUrl(m.from);
+    const nameOf = (mri) => (mri === self ? 'You' : names?.get(mri) || mri);
+    const reply = parseReply(m.content);
     const out = {
       id: m.id,
       conversationId: m.conversationid ?? mriFromUrl(m.conversationLink),
@@ -289,9 +342,43 @@ export function createTeamsClient(getSkypeToken) {
       fromId: from,
       isMine: Boolean(self && from === self),
       time: m.originalarrivaltime || m.composetime,
-      text: stripHtml(m.content),
+      text: stripHtml(reply ? reply.body : m.content),
     };
-    if (/itemtype="http:\/\/schema\.skype\.com\/Reply"/.test(m.content || '')) out.isReply = true;
+    if (m.messagetype === 'Event/Call') {
+      const call = parseCall(m.content);
+      out.kind = 'call';
+      out.text = call.text;
+      out.call = { status: call.status, durationSeconds: call.durationSeconds, participants: call.participants };
+    }
+    if (reply) {
+      const q = parseJsonish(m.properties?.qtdMsgs)?.[0];
+      out.replyTo = {
+        messageId: reply.quoted.messageId || q?.messageId || null,
+        from: (reply.quoted.from && !looksLikeId(reply.quoted.from) ? reply.quoted.from : null)
+          || nameOf(reply.quoted.fromId || q?.sender || '') || null,
+        preview: reply.quoted.preview,
+      };
+    }
+    if (m.properties?.edittime) out.edited = true;
+    const fwd = parseJsonish(m.properties?.originalMessageContext);
+    if (fwd?.originalSender) {
+      out.forwarded = { from: nameOf(fwd.originalSender), originalTime: fwd.originalSentTime || null };
+    }
+    const files = parseJsonish(m.properties?.files);
+    if (Array.isArray(files) && files.length) {
+      out.files = files.map((f) => ({
+        name: f.fileName || f.title || null,
+        type: f.fileType || f.type || null,
+        url: f.fileInfo?.shareUrl || f.objectUrl || f.fileInfo?.fileUrl || f.baseUrl || null,
+      }));
+    }
+    const links = parseJsonish(m.properties?.links);
+    if (Array.isArray(links) && links.length) {
+      out.links = links.map((l) => ({ url: l.url, title: l.preview?.title || null }));
+    } else {
+      const hrefs = [...(m.content || '').matchAll(/<a\b[^>]*href="([^"]+)"/gi)].map((x) => x[1].replace(/&amp;/g, '&'));
+      if (hrefs.length) out.links = [...new Set(hrefs)].map((url) => ({ url, title: null }));
+    }
     const mentions = parseJsonish(m.properties?.mentions);
     if (Array.isArray(mentions) && mentions.length) {
       out.mentions = mentions.map((x) => ({ name: x.displayName || names?.get(x.mri) || x.mri, mri: x.mri, isMe: x.mri === self }));
@@ -362,7 +449,7 @@ export function createTeamsClient(getSkypeToken) {
   async function sendMessage(conversationId, text, { displayName } = {}) {
     const { html, mentions } = buildContent(text);
     const clientmessageid = randomDigits();
-    const body = { clientmessageid, content: html, messagetype: 'RichText/Html', contenttype: 'text', imdisplayname: displayName || '' };
+    const body = { clientmessageid, content: html, messagetype: 'RichText/Html', contenttype: 'text', imdisplayname: displayName || await selfName() };
     if (mentions.length) body.properties = { mentions: JSON.stringify(mentions) };
     const res = await request(`${CHATSVC}/conversations/${encodeURIComponent(conversationId)}/messages`, { method: 'POST', body });
     return {
@@ -395,8 +482,92 @@ export function createTeamsClient(getSkypeToken) {
     return { markedRead: true, conversationId, upToMessageId: target.id, time: target.originalarrivaltime || target.composetime };
   }
 
+  /** One raw message by id (direct lookup, falling back to a scan of recent history). */
+  async function rawMessage(conversationId, messageId) {
+    try {
+      const m = await request(`${CHATSVC}/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}`);
+      if (m?.id) return m;
+    } catch { /* fall back to scanning */ }
+    const recent = await rawMessages(conversationId, { limit: 500, includeSystem: true });
+    const hit = recent.find((x) => String(x.id) === String(messageId));
+    if (!hit) throw new Error(`Message ${messageId} not found in ${conversationId}.`);
+    return hit;
+  }
+
+  async function getMessage(conversationId, messageId) {
+    const [self, names, m] = await Promise.all([me(), contactNames().catch(() => new Map()), rawMessage(conversationId, messageId)]);
+    return formatMessage(m, self, names);
+  }
+
+  async function replyToMessage(conversationId, messageId, text) {
+    const [self, names, original] = await Promise.all([me(), contactNames().catch(() => new Map()), rawMessage(conversationId, messageId)]);
+    const author = mriFromUrl(original.from);
+    const authorName = (original.imdisplayname && !looksLikeId(original.imdisplayname) ? original.imdisplayname : null)
+      || (author === self ? await selfName() : names.get(author)) || author;
+    const originalText = stripHtml(parseReply(original.content)?.body ?? original.content);
+    const preview = originalText.length > 150 ? `${originalText.slice(0, 147)}…` : originalText;
+    const quote = `<blockquote itemscope="" itemtype="http://schema.skype.com/Reply" itemid="${escapeHtml(String(original.id))}">` +
+      `<strong itemprop="mri" itemid="${escapeHtml(author)}">${escapeHtml(authorName)}</strong>` +
+      `<span itemprop="time" itemid="${escapeHtml(String(original.id))}"></span>` +
+      `<p itemprop="preview">${escapeHtml(preview)}</p></blockquote>`;
+    const { html, mentions } = buildContent(text);
+    const clientmessageid = randomDigits();
+    const properties = {
+      qtdMsgs: JSON.stringify([{ messageId: String(original.id), sender: author, time: messageTimeMs(original) }]),
+      ...(mentions.length ? { mentions: JSON.stringify(mentions) } : {}),
+    };
+    await request(`${CHATSVC}/conversations/${encodeURIComponent(conversationId)}/messages`, {
+      method: 'POST',
+      body: { clientmessageid, content: quote + html, messagetype: 'RichText/Html', contenttype: 'text', imdisplayname: await selfName(), properties },
+    });
+    return { sent: true, repliedTo: { messageId: String(original.id), from: author === self ? 'You' : authorName }, mentioned: mentions.map((m) => m.displayName) };
+  }
+
+  async function assertMine(conversationId, messageId) {
+    const [self, m] = await Promise.all([me(), rawMessage(conversationId, messageId)]);
+    if (mriFromUrl(m.from) !== self) throw new Error('You can only edit or delete your own messages.');
+    if (m.properties?.deletetime) throw new Error('That message is already deleted.');
+    return m;
+  }
+
+  async function editMessage(conversationId, messageId, text) {
+    const original = await assertMine(conversationId, messageId);
+    // Keep the quote when editing a reply, so it stays a reply.
+    const quote = (original.content || '').match(REPLY_RE)?.[0] || '';
+    const { html, mentions } = buildContent(text);
+    const body = {
+      id: String(messageId), type: 'Message', conversationid: conversationId,
+      content: quote + html, messagetype: 'RichText/Html', contenttype: 'text', imdisplayname: original.imdisplayname || await selfName(),
+    };
+    const props = {};
+    if (mentions.length) props.mentions = JSON.stringify(mentions);
+    if (quote && original.properties?.qtdMsgs) props.qtdMsgs = original.properties.qtdMsgs;
+    if (Object.keys(props).length) body.properties = props;
+    await request(`${CHATSVC}/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}`, { method: 'PUT', body });
+    return { edited: true, conversationId, messageId: String(messageId), mentioned: mentions.map((m) => m.displayName) };
+  }
+
+  async function deleteMessage(conversationId, messageId) {
+    await assertMine(conversationId, messageId);
+    await request(`${CHATSVC}/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}?behavior=softDelete`, { method: 'DELETE' });
+    return { deleted: true, conversationId, messageId: String(messageId) };
+  }
+
+  /** Messages that @mention the signed-in user, newest first, across recent chats. */
+  async function getMentions({ since = '7d', chats = 20, limit = 30 } = {}) {
+    const sinceMs = parseTime(since);
+    const recent = (await listChats({ limit: chats, resolveNames: false }))
+      .filter((c) => c.type !== 'system' && (!c.lastMessage?.time || Date.parse(c.lastMessage.time) >= sinceMs));
+    await resolveTitles(recent, { max: 8 });
+    const lists = await Promise.all(recent.map(async (c) => {
+      const msgs = await getMessages(c.id, { limit: 200, since: sinceMs }).catch(() => []);
+      return msgs.filter((m) => !m.isMine && m.mentions?.some((x) => x.isMe)).map((m) => ({ ...m, chat: c.title }));
+    }));
+    return lists.flat().sort((a, b) => String(b.time).localeCompare(String(a.time))).slice(0, limit);
+  }
+
   return {
-    whoAmI, listChats, findChats, getChatMembers, getMessages, getUnread, getMyRecentMessages,
-    sendMessage, react, markRead,
+    whoAmI, listChats, findChats, getChatMembers, getMessages, getMessage, getUnread, getMyRecentMessages, getMentions,
+    sendMessage, replyToMessage, editMessage, deleteMessage, react, markRead,
   };
 }

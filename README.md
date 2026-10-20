@@ -321,16 +321,30 @@ stops working immediately. You can also remove the app's access in your Microsof
 | `teams_list_chats` | Recent conversations with id, title (1:1 chats show the person's name), unread flag and last-message preview | ✓ | ✓ |
 | `teams_find_chat` | Find a conversation by group name or person's name | ✓ | ✓ |
 | `teams_get_chat_members` | People in a chat, with names and a ready `@mention` token | ✓ | ✓ |
-| `teams_get_messages` | Messages in a chat, newest first, with @mentions and reactions. `since` / `before` accept ISO dates or `30m`, `24h`, `7d` | ✓ | ✓ |
+| `teams_get_messages` | Messages in a chat, newest first, with @mentions, reactions, replies (quoted message), files, links, forwards, edits and calls. `since` / `before` accept ISO dates or `30m`, `24h`, `7d` | ✓ | ✓ |
+| `teams_get_message` | One message by id, with full details | ✓ | ✓ |
+| `teams_get_mentions` | Messages where someone @mentioned you (default: last 7 days) | ✓ | ✓ |
 | `teams_get_unread` | Unread chats and the messages after your read position (doesn't mark anything as read) | ✓ | ✓ |
 | `teams_get_my_recent_messages` | What you sent recently, across your latest chats (optional `since`) | ✓ | ✓ |
 | `teams_mark_read` | Mark a chat as read (up to a message, or the newest) | ✓ | ✓ |
 | `teams_list_reaction_emojis` | Reaction emojis Teams accepts, with meanings, so the assistant can suggest one | ✓ | ✓ |
 | `teams_add_reaction` / `teams_remove_reaction` | React to a message (👍 ❤️ 😆 🙌 🔥 👀 ✔️ …) or remove your reaction | ✓ | ✓ |
 | `teams_send_message` | Send a message, only when you explicitly ask. `@[Name](id)` becomes a real @mention | ✓ | ✓ |
+| `teams_reply_to_message` | Reply quoting a specific message (shows as a Teams reply), with @mentions | ✓ | ✓ |
+| `teams_edit_message` / `teams_delete_message` | Edit or delete your own messages (others' messages are refused) | ✓ | ✓ |
 | `teams_status` | Which account is signed in | ✓ | ✓ |
 | `teams_logout` | Delete the saved sign-in (remote: revokes your URL) | ✓ | ✓ |
 | `teams_login` | Start device-code sign-in from inside the client | ✓ | (use the web page) |
+
+### Prompts (one-click workflows)
+
+Clients that support MCP prompts (Claude Code `/` menu, Claude desktop "+" menu, VS Code, …) also get:
+
+| Prompt | What it does |
+|--------|--------------|
+| `catch_me_up` | Unread messages and @mentions, summarized per chat, with "Needs your reply" vs "FYI" and suggested replies/reactions. Sends nothing until you confirm. |
+| `draft_reply` | Reads a chat (argument: chat or person name) and drafts a reply in your style, with mentions if needed. Sends only after you say "send". |
+| `daily_digest` | Today's key discussions, decisions and action items, what you said, and what's waiting on you. Read-only. |
 
 ---
 

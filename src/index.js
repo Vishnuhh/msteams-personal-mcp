@@ -5,9 +5,9 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { startLogin, loginState, logout, hasSavedLogin, getSkypeToken } from './auth.js';
 import { createTeamsClient } from './core/teams.js';
-import { registerTeamsTools, wrap } from './core/tools.js';
+import { registerTeamsTools, registerTeamsPrompts, wrap } from './core/tools.js';
 
-const server = new McpServer({ name: 'teams-personal', version: '0.3.0' });
+const server = new McpServer({ name: 'teams-personal', version: '0.4.0' });
 const client = createTeamsClient(getSkypeToken);
 
 server.registerTool('teams_login', {
@@ -46,5 +46,6 @@ server.registerTool('teams_logout', {
 }, wrap(async () => { logout(); return { signedOut: true }; }));
 
 registerTeamsTools(server, client);
+registerTeamsPrompts(server);
 
 await server.connect(new StdioServerTransport());
