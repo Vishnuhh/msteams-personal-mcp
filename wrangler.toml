@@ -1,0 +1,23 @@
+name = "msteams-personal-mcp"
+main = "src/worker.js"
+compatibility_date = "2025-09-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+[vars]
+REPO_URL = "https://github.com/Vishnuhh/msteams-personal-mcp"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "msteams-personal-mcp"
+# Replace with the id printed by: npx wrangler d1 create msteams-personal-mcp
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+
+# Custom domain (the domain must be a zone in the same Cloudflare account). Uncomment and edit:
+# routes = [
+#   { pattern = "teams-mcp.example.com", custom_domain = true }
+# ]
+
+[observability]
+enabled = false
