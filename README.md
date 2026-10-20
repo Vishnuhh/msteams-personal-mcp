@@ -183,7 +183,8 @@ Your domain must be managed by Cloudflare DNS. The free plan is fine:
 
 1. In the Cloudflare dashboard, choose **Add a domain** and follow the steps to point your domain's
    nameservers at Cloudflare (done at your domain registrar). Wait until the domain shows as **Active**.
-2. In `wrangler.toml`, uncomment and edit the route:
+2. In `wrangler.toml`, uncomment and edit the route. Keep it near the top, above `[vars]`: in TOML,
+   anything placed after a `[section]` header belongs to that section.
 
    ```toml
    routes = [
