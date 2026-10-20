@@ -16,7 +16,7 @@ import { registerTeamsTools, wrap } from './core/tools.js';
 import { newSecret, sha256Hex, sealJson, openJson } from './remote/crypto.js';
 import { renderPage } from './remote/page.js';
 
-const VERSION = '0.2.0';
+const VERSION = '0.3.0';
 const USER_INFO = 'user-data-v1';
 const LOGIN_INFO = 'login-data-v1';
 

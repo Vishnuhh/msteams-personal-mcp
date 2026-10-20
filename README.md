@@ -297,8 +297,14 @@ claude mcp add --transport http teams-personal https://teams-mcp.yourdomain.com/
 
 ### 3. Try it
 
-Ask your assistant things like *"Do I have unread Teams messages?"*, *"What did I last say in the
-Knowledge Bytes chat?"* or *"Summarize today's messages in the DevOps group"*.
+Ask your assistant things like:
+
+- *"Do I have unread Teams messages? Summarize what needs a reply."*
+- *"Summarize the last 24 hours in the DevOps group."*
+- *"Who is in the Knowledge Bytes chat?"*
+- *"React with a fitting emoji to Gokul's last message."*
+- *"Send 'Please review the PR' to DevOps and mention Lokesh."*
+- *"Mark the HR chat as read."*
 
 ### Revoking access
 
@@ -312,12 +318,16 @@ stops working immediately. You can also remove the app's access in your Microsof
 
 | Tool | What it does | Local | Remote |
 |------|--------------|:-----:|:------:|
-| `teams_list_chats` | Recent conversations with id, title, unread flag and last-message preview | ✓ | ✓ |
+| `teams_list_chats` | Recent conversations with id, title (1:1 chats show the person's name), unread flag and last-message preview | ✓ | ✓ |
 | `teams_find_chat` | Find a conversation by group name or person's name | ✓ | ✓ |
-| `teams_get_messages` | Messages in a conversation, newest first | ✓ | ✓ |
+| `teams_get_chat_members` | People in a chat, with names and a ready `@mention` token | ✓ | ✓ |
+| `teams_get_messages` | Messages in a chat, newest first, with @mentions and reactions. `since` / `before` accept ISO dates or `30m`, `24h`, `7d` | ✓ | ✓ |
 | `teams_get_unread` | Unread chats and the messages after your read position (doesn't mark anything as read) | ✓ | ✓ |
-| `teams_get_my_recent_messages` | What you sent recently, across your latest chats | ✓ | ✓ |
-| `teams_send_message` | Send a message, only when you explicitly ask | ✓ | ✓ |
+| `teams_get_my_recent_messages` | What you sent recently, across your latest chats (optional `since`) | ✓ | ✓ |
+| `teams_mark_read` | Mark a chat as read (up to a message, or the newest) | ✓ | ✓ |
+| `teams_list_reaction_emojis` | Reaction emojis Teams accepts, with meanings, so the assistant can suggest one | ✓ | ✓ |
+| `teams_add_reaction` / `teams_remove_reaction` | React to a message (👍 ❤️ 😆 🙌 🔥 👀 ✔️ …) or remove your reaction | ✓ | ✓ |
+| `teams_send_message` | Send a message, only when you explicitly ask. `@[Name](id)` becomes a real @mention | ✓ | ✓ |
 | `teams_status` | Which account is signed in | ✓ | ✓ |
 | `teams_logout` | Delete the saved sign-in (remote: revokes your URL) | ✓ | ✓ |
 | `teams_login` | Start device-code sign-in from inside the client | ✓ | (use the web page) |
@@ -353,12 +363,12 @@ stops working immediately. You can also remove the app's access in your Microsof
   endpoints the Teams web client uses. Microsoft can change them at any time, and using them may
   not be covered by Microsoft's terms of service. Use at your own risk.
 - **Personal accounts only.** Work/school Teams isn't supported.
-- **Text messages.** Read/send covers text and rich-text messages. Files, images, reactions,
-  calls and meetings aren't supported yet.
-- **1:1 chat names.** If you sent the last message in a 1:1 chat, its title may show the chat id
-  instead of the other person's name.
+- **Text messages.** Read/send covers text and rich-text messages, @mentions and reactions. Files,
+  images, calls and meetings aren't supported yet.
+- **Names.** Names come from your contact list, with a fallback to names seen in the chat. Someone
+  who isn't in your contacts and has never written in the chat may show as an id.
 - **Remote limits.** Cloudflare's free plan caps outgoing requests per call. The multi-chat tools
-  (`teams_get_my_recent_messages`, `teams_get_unread`) therefore scan up to about 20 chats per call.
+  (`teams_get_my_recent_messages`, `teams_get_unread`) therefore scan up to about 15–20 chats per call.
 
 ---
 

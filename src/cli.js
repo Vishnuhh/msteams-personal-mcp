@@ -21,13 +21,14 @@ const commands = {
   async logout() { logout(); print({ signedOut: true }); },
   async chats() { print(await client.listChats({ limit: Number(rest[0]) || 30 })); },
   async find() { print(await client.findChats(rest.join(' '))); },
-  async messages() { print(await client.getMessages(rest[0], { limit: Number(rest[1]) || 30 })); },
+  async messages() { print(await client.getMessages(rest[0], { limit: Number(rest[1]) || 30, since: rest[2] })); },
+  async members() { print(await client.getChatMembers(rest[0])); },
   async mine() { print(await client.getMyRecentMessages({ limit: Number(rest[0]) || 20 })); },
   async unread() { print(await client.getUnread({ chats: Number(rest[0]) || 50 })); },
 };
 
 if (!commands[cmd]) {
-  print('Usage: node src/cli.js <login|status|logout|chats [n]|find <text>|messages <conversationId> [n]|mine [n]|unread [chats]>');
+  print('Usage: node src/cli.js <login|status|logout|chats [n]|find <text>|messages <conversationId> [n] [since]|members <conversationId>|mine [n]|unread [chats]>');
   process.exit(cmd ? 1 : 0);
 }
 commands[cmd]().catch((e) => { console.error(`Error: ${e.message}`); process.exit(1); });
