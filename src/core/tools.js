@@ -163,7 +163,7 @@ export function registerTeamsTools(server, client, { beforeCall } = {}) {
       'mentionEveryone=true mentions every member of a group (up to 25): only when the user asked to notify everyone.',
     inputSchema: {
       conversationId: z.string().min(1),
-      text: z.string().min(1).describe('Plain text; blank lines become paragraphs; @[Name](mri) becomes a mention'),
+      text: z.string().min(1).describe('Blank lines separate paragraphs; lines starting with "- " become a bulleted list; **bold**, `code` and https:// links are formatted; @[Name](mri) becomes a mention'),
       mentionEveryone: z.boolean().optional().describe('Mention all other group members (notifies each of them)'),
     },
   }, wrap(({ conversationId, text, mentionEveryone }) => client.sendMessage(conversationId, text, { mentionEveryone })));

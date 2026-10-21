@@ -139,28 +139,59 @@ function randomDigits() {
   return String(BigInt('0x' + hex) % 10n ** 18n);
 }
 
+const LINK_RE = /https?:\/\/[^\s<>"'*`]+[^\s<>"'*`.,;:!?)\]]/g;
+
+/** Inline formatting for plain text: `code`, **bold** and clickable links. Input is raw text; output is safe HTML. */
+export function formatInline(text) {
+  return text.split(/(`[^`\n]+`)/).map((part, i) => {
+    if (i % 2 === 1) return `<code>${escapeHtml(part.slice(1, -1))}</code>`;
+    let out = '';
+    let last = 0;
+    for (const m of part.matchAll(LINK_RE)) {
+      out += escapeHtml(part.slice(last, m.index));
+      const url = escapeHtml(m[0]);
+      out += `<a href="${url}" title="${url}" target="_blank" rel="noreferrer noopener" itemtype="http://schema.skype.com/HyperLink">${url}</a>`;
+      last = m.index + m[0].length;
+    }
+    out += escapeHtml(part.slice(last));
+    return out.replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>');
+  }).join('');
+}
+
 /**
- * Turns "@[Display Name](8:live:…)" tokens into Teams mention markup.
- * Returns { html, mentions } where mentions is the properties.mentions array.
+ * Turns plain text into Teams message HTML:
+ *   - "@[Display Name](8:live:…)" becomes a real @mention (returned in `mentions` for properties.mentions)
+ *   - blank lines separate paragraphs (with a visible gap, as the Teams client does)
+ *   - a paragraph whose lines all start with "- " becomes a bulleted list
+ *   - `code`, **bold** and https:// links are formatted inline
  */
 export function buildContent(text) {
   const mentions = [];
   const re = /@\[([^\]]+)\]\(((?:8|28):[^)\s]+)\)/g;
-  const paragraphs = text.split(/\n{2,}/).map((p) => {
+  const line = (src) => {
     let out = '';
     let last = 0;
-    for (const m of p.matchAll(re)) {
-      out += escapeHtml(p.slice(last, m.index)).replace(/\n/g, '<br>');
+    for (const m of src.matchAll(re)) {
+      out += formatInline(src.slice(last, m.index));
       const itemid = String(mentions.length);
       mentions.push({ '@type': 'http://schema.skype.com/Mention', itemid, mri: m[2], mentionType: 'person', displayName: m[1] });
       out += `<readonly class="skipProofing" itemtype="http://schema.skype.com/Mention" contenteditable="false" spellcheck="false">` +
         `<span itemtype="http://schema.skype.com/Mention" itemscope itemid="${itemid}">${escapeHtml(m[1])}</span></readonly>`;
       last = m.index + m[0].length;
     }
-    out += escapeHtml(p.slice(last)).replace(/\n/g, '<br>');
-    return `<p>${out}</p>`;
+    return out + formatInline(src.slice(last));
+  };
+  const blocks = text.replace(/\r/g, '').split(/\n{2,}/).filter((b) => b.trim()).map((b) => {
+    const lines = b.split('\n');
+    const isItem = (l) => /^\s*[-•]\s+/.test(l);
+    const list = (items) => `<ul>${items.map((l) => `<li>${line(l.replace(/^\s*[-•]\s+/, ''))}</li>`).join('')}</ul>`;
+    if (lines.every(isItem)) return list(lines);
+    // A heading line directly followed by a list keeps them together.
+    if (lines.length > 1 && !isItem(lines[0]) && lines.slice(1).every(isItem)) return `<p>${line(lines[0])}</p>${list(lines.slice(1))}`;
+    return `<p>${lines.map(line).join('<br>')}</p>`;
   });
-  return { html: paragraphs.join(''), mentions };
+  // Teams renders adjacent paragraphs tight together; an empty paragraph gives the gap readers expect.
+  return { html: blocks.join('<p>&nbsp;</p>'), mentions };
 }
 
 /**

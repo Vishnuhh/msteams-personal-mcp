@@ -71,3 +71,15 @@ test('remote crypto: per-user sealing round-trips and needs the right key and sa
   await assert.rejects(openJson(newSecret('tpm'), 'salt-1', 'user-data-v1', sealed));
   await assert.rejects(openJson(key, 'salt-2', 'user-data-v1', sealed));
 });
+
+test('message formatting: gaps between paragraphs, bullet lists, bold, code, links', () => {
+  const { html } = buildContent('Intro line\n\n- **One:** run `npm test`\n- Two https://x.test/a\n\nEnd: https://x.test/b.');
+  assert.match(html, /^<p>Intro line<\/p><p>&nbsp;<\/p><ul><li>/);
+  assert.match(html, /<li><b>One:<\/b> run <code>npm test<\/code><\/li>/);
+  assert.match(html, /<a href="https:\/\/x\.test\/a" [^>]*>https:\/\/x\.test\/a<\/a>/);
+  assert.match(html, /<a href="https:\/\/x\.test\/b" [^>]*>https:\/\/x\.test\/b<\/a>\.<\/p>$/, 'trailing full stop is not part of the link');
+  assert.doesNotMatch(buildContent('`https://x.test/c`').html, /<a /, 'links inside code stay code');
+  assert.doesNotMatch(buildContent('<script>alert(1)</script> **x**').html, /<script>/);
+  assert.match(buildContent('**https://x.test/d**').html, /^<p><b><a href="https:\/\/x\.test\/d" [^>]*>https:\/\/x\.test\/d<\/a><\/b><\/p>$/, 'bold link');
+  assert.match(buildContent('**Steps**\n- one\n- two').html, /^<p><b>Steps<\/b><\/p><ul><li>one<\/li><li>two<\/li><\/ul>$/, 'heading + list');
+});
