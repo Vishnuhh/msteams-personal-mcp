@@ -30,6 +30,19 @@ export async function sha256Hex(text) {
   return [...d].map((x) => x.toString(16).padStart(2, '0')).join('');
 }
 
+/** BASE64URL(SHA-256(text)), the PKCE S256 transform (RFC 7636). */
+export async function sha256B64url(text) {
+  return toB64url(new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(text))));
+}
+
+/** Constant-time string comparison. */
+export function safeEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
 async function deriveKey(secret, salt, info) {
   const ikm = await crypto.subtle.importKey('raw', enc.encode(secret), 'HKDF', false, ['deriveKey']);
   return crypto.subtle.deriveKey(

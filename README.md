@@ -227,13 +227,55 @@ npm run dev:remote          # http://127.0.0.1:8787
 
 ## Connecting a client to a remote server
 
-### 1. Get your personal MCP URL
+There are two ways to connect. **Sign in from your app** (OAuth) is the easiest and keeps every key
+out of URLs; use a **personal URL** for clients that don't support MCP sign-in.
+
+### Option 1: sign in from your app (recommended)
+
+Add the server's MCP address, **`https://teams-mcp.yourdomain.com/mcp`**, to your app. The app opens
+the server's sign-in page; press **Get sign-in code**, approve the code at microsoft.com/devicelogin
+with the personal Microsoft account you use on teams.live.com, and you are sent back to the app,
+connected.
+
+**Claude (claude.ai and the Claude desktop app):** **Settings → Connectors → Add custom connector**.
+Name it `Teams Personal`, enter `https://teams-mcp.yourdomain.com/mcp`, **Add**, then **Connect**.
+
+**Claude Code**
+
+```bash
+claude mcp add --scope user --transport http teams-personal https://teams-mcp.yourdomain.com/mcp
+```
+
+Then run `/mcp` inside Claude Code, pick `teams-personal` and choose **Authenticate**.
+
+**Cursor** (`~/.cursor/mcp.json`); Cursor shows a **Login** button for the server:
+
+```json
+{
+  "mcpServers": {
+    "teams-personal": { "url": "https://teams-mcp.yourdomain.com/mcp" }
+  }
+}
+```
+
+**VS Code** (`.vscode/mcp.json`); VS Code asks you to sign in when the server starts:
+
+```json
+{
+  "servers": {
+    "teams-personal": { "type": "http", "url": "https://teams-mcp.yourdomain.com/mcp" }
+  }
+}
+```
+
+Behind the scenes this is standard MCP authorization (OAuth 2.1): discovery from the 401 response,
+dynamic client registration, authorization code with PKCE (S256). No client ID or secret to set up.
+
+### Option 2: a personal URL (any client)
 
 1. Open the server's home page (for example `https://teams-mcp.yourdomain.com`).
-2. Click **Get sign-in code**.
-3. Open microsoft.com/devicelogin, enter the code, and sign in with the personal Microsoft account
-   you use on teams.live.com.
-4. The page shows your personal MCP URL:
+2. Click **Get sign-in code**, approve it at microsoft.com/devicelogin.
+3. Copy the personal MCP URL the page shows:
 
    ```
    https://teams-mcp.yourdomain.com/mcp/tpm_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
@@ -242,60 +284,25 @@ npm run dev:remote          # http://127.0.0.1:8787
    **Treat this URL like a password.** Anyone who has it can read and send your Teams messages.
    It is shown only once. If you lose it, sign in again to get a new one.
 
-### 2. Add it to your client
-
-**Claude Code**
+Use it anywhere an MCP URL goes, for example:
 
 ```bash
-claude mcp add --transport http teams-personal https://teams-mcp.yourdomain.com/mcp/tpm_xxx
+claude mcp add --scope user --transport http teams-personal https://teams-mcp.yourdomain.com/mcp/tpm_xxx
 ```
 
-Add `--scope user` to make it available in every project.
-
-**Claude (claude.ai and the Claude desktop app):** **Settings → Connectors → Add custom connector**.
-Name it `Teams Personal`, paste your MCP URL, and save. Leave the OAuth fields empty.
-
-**Cursor** (`~/.cursor/mcp.json`):
-
-```json
-{
-  "mcpServers": {
-    "teams-personal": { "url": "https://teams-mcp.yourdomain.com/mcp/tpm_xxx" }
-  }
-}
-```
-
-**VS Code** (`.vscode/mcp.json`):
-
-```json
-{
-  "servers": {
-    "teams-personal": { "type": "http", "url": "https://teams-mcp.yourdomain.com/mcp/tpm_xxx" }
-  }
-}
-```
-
-**Clients that support headers** can keep the key out of the URL. Use the endpoint `/mcp` and send
-`Authorization: Bearer tpm_xxx`:
-
-```bash
-claude mcp add --transport http teams-personal https://teams-mcp.yourdomain.com/mcp \
-  --header "Authorization: Bearer tpm_xxx"
-```
-
-**Clients that only support stdio** can bridge with
+Clients that support headers can keep the key out of the URL: endpoint `/mcp` with
+`Authorization: Bearer tpm_xxx`. Clients that only support stdio can bridge with
 [`mcp-remote`](https://www.npmjs.com/package/mcp-remote):
 
 ```json
 {
   "mcpServers": {
-    "teams-personal": {
-      "command": "npx",
-      "args": ["-y", "mcp-remote", "https://teams-mcp.yourdomain.com/mcp/tpm_xxx"]
-    }
+    "teams-personal": { "command": "npx", "args": ["-y", "mcp-remote", "https://teams-mcp.yourdomain.com/mcp"] }
   }
 }
 ```
+
+(`mcp-remote` handles the OAuth sign-in for you, so the plain `/mcp` address works.)
 
 ### 3. Try it
 
@@ -310,8 +317,9 @@ Ask your assistant things like:
 
 ### Revoking access
 
-Ask your assistant to run **`teams_logout`**. That deletes your sign-in from the server and the URL
-stops working immediately. You can also remove the app's access in your Microsoft account at
+Ask your assistant to run **`teams_logout`**. That deletes your sign-in from the server and the
+connection (app sign-in or personal URL) stops working immediately. Removing the connector in your
+app also revokes it. You can also remove the app's access in your Microsoft account at
 [account.live.com/consent/Manage](https://account.live.com/consent/Manage).
 
 ---
@@ -370,6 +378,12 @@ Clients that support MCP prompts (Claude Code `/` menu, Claude desktop "+" menu,
   - Pending sign-in codes are sealed the same way and expire after 15 minutes.
   - Per-IP rate limits protect the public endpoints: 5 sign-in starts, 40 sign-in checks and 300 MCP
     requests per minute (Cloudflare rate-limit bindings in `wrangler.toml`).
+- **App sign-in (OAuth 2.1).** The server is its own authorization server: discovery
+  (RFC 9728 / RFC 8414), dynamic client registration (RFC 7591), authorization code with PKCE S256
+  only, single-use codes valid 10 minutes, exact redirect-URI matching, resource indicators
+  (RFC 8707), `iss` in the redirect (RFC 9207) and token revocation (RFC 7009). The access token it
+  issues is the same 256-bit per-user key, so the encryption above applies unchanged. The sign-in
+  page names the requesting app and where you will be sent back, and cannot be framed.
 - **Sending messages** is a separate tool, described to the AI as "only when the user explicitly
   asked". Most clients also ask you to approve each tool call.
 - **Self-hosting is the most private option.** Whoever runs a server controls its code. Only use
