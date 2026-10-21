@@ -7,7 +7,7 @@ import { startLogin, loginState, logout, hasSavedLogin, getSkypeToken } from './
 import { createTeamsClient } from './core/teams.js';
 import { registerTeamsTools, registerTeamsPrompts, wrap } from './core/tools.js';
 
-const server = new McpServer({ name: 'teams-personal', version: '0.4.0' });
+const server = new McpServer({ name: 'teams-personal', version: '0.5.0' });
 const client = createTeamsClient(getSkypeToken);
 
 server.registerTool('teams_login', {

@@ -1,5 +1,7 @@
 # msteams-personal-mcp
 
+[![CI](https://github.com/Vishnuhh/msteams-personal-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Vishnuhh/msteams-personal-mcp/actions/workflows/ci.yml)
+
 An MCP server for **Microsoft Teams personal** — the free/consumer Teams at
 [teams.live.com](https://teams.live.com) that you sign in to with a personal Microsoft account
 (@outlook.com, @hotmail.com, @live.com, or any personal MSA).
@@ -301,9 +303,9 @@ Ask your assistant things like:
 
 - *"Do I have unread Teams messages? Summarize what needs a reply."*
 - *"Summarize the last 24 hours in the DevOps group."*
-- *"Who is in the Knowledge Bytes chat?"*
-- *"React with a fitting emoji to Gokul's last message."*
-- *"Send 'Please review the PR' to DevOps and mention Lokesh."*
+- *"Who is in the Design crew chat?"*
+- *"React with a fitting emoji to Asha's last message."*
+- *"Send 'Please review the PR' to DevOps and mention Ravi."*
 - *"Mark the HR chat as read."*
 
 ### Revoking access
@@ -324,6 +326,8 @@ stops working immediately. You can also remove the app's access in your Microsof
 | `teams_get_messages` | Messages in a chat, newest first, with @mentions, reactions, replies (quoted message), files, links, forwards, edits and calls. `since` / `before` accept ISO dates or `30m`, `24h`, `7d` | ✓ | ✓ |
 | `teams_get_message` | One message by id, with full details | ✓ | ✓ |
 | `teams_get_mentions` | Messages where someone @mentioned you (default: last 7 days) | ✓ | ✓ |
+| `teams_search_messages` | Search message text across recent chats or one chat (every word must match; default: last 30 days) | ✓ | ✓ |
+| `teams_get_shared_files` | Files and links shared in a chat, with who shared them and when | ✓ | ✓ |
 | `teams_get_unread` | Unread chats and the messages after your read position (doesn't mark anything as read) | ✓ | ✓ |
 | `teams_get_my_recent_messages` | What you sent recently, across your latest chats (optional `since`) | ✓ | ✓ |
 | `teams_mark_read` | Mark a chat as read (up to a message, or the newest) | ✓ | ✓ |
@@ -364,6 +368,8 @@ Clients that support MCP prompts (Claude Code `/` menu, Claude desktop "+" menu,
   - A database dump alone, or the person running the server, can't decrypt anyone's tokens
     without that user's URL.
   - Pending sign-in codes are sealed the same way and expire after 15 minutes.
+  - Per-IP rate limits protect the public endpoints: 5 sign-in starts, 40 sign-in checks and 300 MCP
+    requests per minute (Cloudflare rate-limit bindings in `wrangler.toml`).
 - **Sending messages** is a separate tool, described to the AI as "only when the user explicitly
   asked". Most clients also ask you to approve each tool call.
 - **Self-hosting is the most private option.** Whoever runs a server controls its code. Only use
@@ -382,7 +388,10 @@ Clients that support MCP prompts (Claude Code `/` menu, Claude desktop "+" menu,
 - **Names.** Names come from your contact list, with a fallback to names seen in the chat. Someone
   who isn't in your contacts and has never written in the chat may show as an id.
 - **Remote limits.** Cloudflare's free plan caps outgoing requests per call. The multi-chat tools
-  (`teams_get_my_recent_messages`, `teams_get_unread`) therefore scan up to about 15–20 chats per call.
+  (`teams_get_my_recent_messages`, `teams_get_unread`, `teams_search_messages`, `teams_get_mentions`)
+  therefore scan up to about 15–20 recent chats per call.
+- **Search** scans recent history client-side (personal Teams has no search API we can use), so it
+  finds messages from the last weeks rather than years back.
 
 ---
 
@@ -399,6 +408,15 @@ Clients that support MCP prompts (Claude Code `/` menu, Claude desktop "+" menu,
 
 ---
 
+## Development
+
+```bash
+npm test                 # unit tests (node:test)
+npm run dev:remote       # remote server on http://127.0.0.1:8787 (after npm run db:migrate:local)
+```
+
+CI runs the tests, starts the local server and bundles the Worker on every push.
+
 ## Project layout
 
 ```
@@ -413,6 +431,7 @@ src/
   remote/crypto.js   Per-user envelope encryption (Web Crypto)
   remote/page.js     Sign-in web page
 migrations/          D1 schema
+test/                Unit tests
 wrangler.toml        Cloudflare config
 ```
 

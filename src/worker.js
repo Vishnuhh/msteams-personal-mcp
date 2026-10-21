@@ -16,7 +16,7 @@ import { registerTeamsTools, registerTeamsPrompts, wrap } from './core/tools.js'
 import { newSecret, sha256Hex, sealJson, openJson } from './remote/crypto.js';
 import { renderPage } from './remote/page.js';
 
-const VERSION = '0.4.0';
+const VERSION = '0.5.0';
 const USER_INFO = 'user-data-v1';
 const LOGIN_INFO = 'login-data-v1';
 
@@ -162,14 +162,37 @@ async function handleMcp(request, env, url) {
   return transport.handleRequest(request);
 }
 
+// ---------------------------------------------------------------- rate limiting
+
+// Cloudflare rate-limit bindings (see wrangler.toml). Missing bindings (e.g. older configs) mean "no limit".
+const LIMITS = [
+  { match: (p) => p === '/api/login/start', binding: 'LOGIN_START_LIMITER', message: 'Too many sign-in attempts. Wait a minute and try again.' },
+  { match: (p) => p === '/api/login/poll', binding: 'LOGIN_POLL_LIMITER', message: 'Checking too often. Wait a few seconds.' },
+  { match: (p) => p === '/mcp' || p.startsWith('/mcp/'), binding: 'MCP_LIMITER', message: 'Too many requests. Slow down and retry shortly.' },
+];
+
+async function rateLimited(request, env, url) {
+  const rule = LIMITS.find((r) => r.match(url.pathname));
+  const limiter = rule && env[rule.binding];
+  if (!limiter) return null;
+  const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+  const { success } = await limiter.limit({ key: `${rule.binding}:${ip}` });
+  if (success) return null;
+  return json({ error: rule.message, jsonrpc: url.pathname.startsWith('/mcp') ? '2.0' : undefined }, 429, { 'Retry-After': '60' });
+}
+
 // ---------------------------------------------------------------- router
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     try {
+      if (request.method === 'POST') {
+        const limited = await rateLimited(request, env, url);
+        if (limited) return limited;
+      }
       if (url.pathname === '/' && request.method === 'GET') {
-        return new Response(renderPage({ repoUrl: env.REPO_URL }), {
+        return new Response(renderPage({ repoUrl: env.REPO_URL, version: 'v' + VERSION }), {
           headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'no-referrer' },
         });
       }

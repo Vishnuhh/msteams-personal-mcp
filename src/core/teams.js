@@ -566,7 +566,46 @@ export function createTeamsClient(getSkypeToken) {
     return lists.flat().sort((a, b) => String(b.time).localeCompare(String(a.time))).slice(0, limit);
   }
 
+  /**
+   * Text search across recent chats (Teams personal has no server-side search API we can use).
+   * Every word of the query must appear in the message, sender or file/link names; case-insensitive.
+   */
+  async function searchMessages(query, { since = '30d', chats = 20, limit = 30, conversationId } = {}) {
+    const words = String(query).toLowerCase().split(/\s+/).filter(Boolean);
+    if (!words.length) throw new Error('Search needs at least one word.');
+    const sinceMs = parseTime(since);
+    let scope;
+    if (conversationId) {
+      scope = [{ id: conversationId, title: null }];
+    } else {
+      scope = (await listChats({ limit: chats, resolveNames: false }))
+        .filter((c) => c.type !== 'system' && (!c.lastMessage?.time || Date.parse(c.lastMessage.time) >= sinceMs));
+      await resolveTitles(scope, { max: 8 });
+    }
+    const lists = await Promise.all(scope.map(async (c) => {
+      const msgs = await getMessages(c.id, { limit: 200, since: sinceMs }).catch(() => []);
+      return msgs.filter((m) => {
+        const hay = [m.text, m.from, ...(m.files || []).map((f) => f.name), ...(m.links || []).map((l) => `${l.url} ${l.title || ''}`)]
+          .join(' ').toLowerCase();
+        return words.every((w) => hay.includes(w));
+      }).map((m) => ({ ...m, chat: c.title }));
+    }));
+    return lists.flat().sort((a, b) => String(b.time).localeCompare(String(a.time))).slice(0, limit);
+  }
+
+  /** Files and links shared in one chat, newest first. */
+  async function getSharedFiles(conversationId, { since = '90d', limit = 50 } = {}) {
+    const msgs = await getMessages(conversationId, { limit: 500, since });
+    const files = [], links = [];
+    for (const m of msgs) {
+      for (const f of m.files || []) files.push({ ...f, from: m.from, time: m.time, messageId: m.id });
+      for (const l of m.links || []) links.push({ ...l, from: m.from, time: m.time, messageId: m.id });
+    }
+    return { files: files.slice(0, limit), links: links.slice(0, limit), scannedMessages: msgs.length };
+  }
+
   return {
+    searchMessages, getSharedFiles,
     whoAmI, listChats, findChats, getChatMembers, getMessages, getMessage, getUnread, getMyRecentMessages, getMentions,
     sendMessage, replyToMessage, editMessage, deleteMessage, react, markRead,
   };

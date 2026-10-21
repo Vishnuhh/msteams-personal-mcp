@@ -44,6 +44,25 @@ export function registerTeamsTools(server, client) {
     inputSchema: { conversationId: z.string().min(1), messageId: z.string().min(1) },
   }, wrap(({ conversationId, messageId }) => client.getMessage(conversationId, messageId)));
 
+  server.registerTool('teams_search_messages', {
+    description: 'Search message text across recent chats (or one chat). Every word must match; also matches sender names and shared file/link names. ' +
+      'Scans recent history, so narrow with since (default "30d") or conversationId for older messages.',
+    inputSchema: {
+      query: z.string().min(1),
+      since: timeArg('Search back to this time (default "30d")'),
+      conversationId: z.string().optional().describe('Only search this chat'),
+      chats: z.number().int().min(1).max(30).optional().describe('How many recent chats to scan (default 20)'),
+    },
+  }, wrap(({ query, since, conversationId, chats }) => client.searchMessages(query, { since, conversationId, chats })));
+
+  server.registerTool('teams_get_shared_files', {
+    description: 'Files and links shared in a chat, newest first, with who shared them and when.',
+    inputSchema: {
+      conversationId: z.string().min(1),
+      since: timeArg('Look back to this time (default "90d")'),
+    },
+  }, wrap(({ conversationId, since }) => client.getSharedFiles(conversationId, { since })));
+
   server.registerTool('teams_get_mentions', {
     description: 'Messages where someone @mentioned the signed-in user, newest first, across recent chats.',
     inputSchema: {
@@ -154,7 +173,7 @@ export function registerTeamsPrompts(server) {
     title: 'Draft a Teams reply',
     description: 'Read a chat and draft a reply in your style; sends only after you approve.',
     argsSchema: {
-      chat: z.string().describe('Chat or person name, e.g. "DevOps" or "Prasaanth"'),
+      chat: z.string().describe('Chat or person name, e.g. "Design crew" or "Asha"'),
       intent: z.string().optional().describe('What you want to say (optional)'),
     },
   }, ({ chat, intent }) => userPrompt(

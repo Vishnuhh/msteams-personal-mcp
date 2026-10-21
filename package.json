@@ -1,6 +1,6 @@
 {
   "name": "msteams-personal-mcp",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "MCP server for Microsoft Teams personal accounts (teams.live.com) — local (stdio) or remote (Cloudflare Workers)",
   "type": "module",
   "main": "src/index.js",
@@ -14,12 +14,20 @@
     "dev:remote": "wrangler dev",
     "db:migrate:local": "wrangler d1 migrations apply msteams-personal-mcp --local",
     "db:migrate:remote": "wrangler d1 migrations apply msteams-personal-mcp --remote",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "test": "node --test \"test/*.test.js\""
   },
   "engines": {
     "node": ">=18"
   },
-  "keywords": ["mcp", "microsoft-teams", "teams-personal", "teams-live", "cloudflare-workers", "claude"],
+  "keywords": [
+    "mcp",
+    "microsoft-teams",
+    "teams-personal",
+    "teams-live",
+    "cloudflare-workers",
+    "claude"
+  ],
   "license": "MIT",
   "dependencies": {
     "@cfworker/json-schema": "^4.1.1",

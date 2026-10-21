@@ -20,5 +20,22 @@ database_name = "msteams-personal-mcp"
 database_id = "00000000-0000-0000-0000-000000000000"
 migrations_dir = "migrations"
 
+# Per-IP rate limits (Cloudflare Workers rate-limit bindings; period is 10 or 60 seconds).
+# Offices share one IP, so the MCP limit is generous; sign-in limits stop abuse of the public page.
+[[ratelimits]]
+name = "LOGIN_START_LIMITER"
+namespace_id = "1001"
+simple = { limit = 5, period = 60 }
+
+[[ratelimits]]
+name = "LOGIN_POLL_LIMITER"
+namespace_id = "1002"
+simple = { limit = 40, period = 60 }
+
+[[ratelimits]]
+name = "MCP_LIMITER"
+namespace_id = "1003"
+simple = { limit = 300, period = 60 }
+
 [observability]
 enabled = false
