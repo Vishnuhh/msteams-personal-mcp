@@ -30,7 +30,7 @@ import { z } from 'zod';
 import { requestDeviceCode, pollDeviceCode, exchangeForSkypeToken, selfMri } from './core/oauth.js';
 import { createTeamsClient } from './core/teams.js';
 import { registerTeamsTools, registerTeamsPrompts, wrap } from './core/tools.js';
-import { newSecret, sha256Hex, sha256B64, hmacHex, sealJson, openJson, safeEqual } from './remote/crypto.js';
+import { newSecret, sha256Hex, sha256B64, sealJson, openJson, safeEqual } from './remote/crypto.js';
 import { renderPage } from './remote/page.js';
 import { renderAuthorizePage, renderAuthorizeError } from './remote/authorize-page.js';
 import { renderChangelogPage } from './remote/changelog.js';
@@ -42,8 +42,9 @@ import {
 import { usageRecorder } from './remote/usage.js';
 import {
   accessMode, setMode, inviteValid, decideSignIn, connectionAccess, recheckMember, accessSummary, accessOverview,
-  addGroup, removeGroup, createInvite, revokeInvite, personAccess, cleanupStatements,
+  addGroup, removeGroup, createInvite, revokeInvite, personAccess, cleanupStatements, accountHash,
 } from './remote/access.js';
+import { adminTeamsInfo, teamsStatus, startLink, pollLink, unlink, myGroups } from './remote/admin-teams.js';
 import CHANGELOG from '../CHANGELOG.md';
 import pkg from '../package.json';
 import {
@@ -128,7 +129,6 @@ async function loginStart(request, env, ctx) {
   return json({ loginId, userCode: dc.userCode, verificationUrl: dc.verificationUrl, interval: dc.interval, expiresAt: dc.expiresAt });
 }
 
-const accountHash = (env, mri) => hmacHex(salt(env), `account|${mri}`);
 
 /** Posts a short note to the user's own Teams Notes so an unexpected connection gets noticed. */
 async function newConnectionAlert(skype, { appName, host, country }) {
@@ -503,7 +503,12 @@ export default {
         if ((path === '/admin/api/overview' || path === '/admin/stats') && method === 'GET') {
           return json(await adminOverview(env, { version: VERSION, settings: settingsView, inactiveDays: INACTIVE_DAYS, access: { ...mode, ...(await accessSummary(env, mode)) } }));
         }
-        if (path === '/admin/api/access' && method === 'GET') return await accessOverview(env, mode);
+        if (path === '/admin/api/access' && method === 'GET') return await accessOverview(env, mode, { adminKey: (await adminTeamsInfo(env)).key });
+        if (path === '/admin/api/access/my-groups' && method === 'GET') return await myGroups(env);
+        if (path === '/admin/api/teams' && method === 'GET') return await teamsStatus(env);
+        if (path === '/admin/api/teams/link/start' && method === 'POST') return await startLink(env);
+        if (path === '/admin/api/teams/link/poll' && method === 'POST') return await pollLink(env);
+        if (path === '/admin/api/teams/unlink' && method === 'POST') return await unlink(env);
         if (path === '/admin/api/access/mode' && method === 'POST') return await setMode(request, env, mode);
         if (path === '/admin/api/access/groups' && method === 'POST') return await addGroup(request, env);
         if (path === '/admin/api/access/groups/remove' && method === 'POST') return await removeGroup(request, env);
@@ -513,7 +518,7 @@ export default {
         const acc = path.match(/^\/admin\/api\/access\/people\/([0-9a-f]{64})\/(approve|block|remove|unblock)$/);
         if (acc && method === 'POST') {
           if (acc[2] === 'block' || acc[2] === 'remove') skypeCache.clear();
-          return await personAccess(env, acc[1], acc[2]);
+          return await personAccess(env, acc[1], acc[2], { adminKey: (await adminTeamsInfo(env)).key });
         }
         const end = path.match(/^\/admin\/api\/connections\/([0-9a-f]{64})\/end$/);
         if (end && method === 'POST') {

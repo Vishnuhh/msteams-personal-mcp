@@ -9,7 +9,10 @@
 // admin's request queue. Open mode lets every personal Microsoft account in (the old behaviour).
 //
 // Accounts are identified only by their HMAC account hash, as in the usage tables.
-import { newSecret, sha256Hex } from './crypto.js';
+import { newSecret, sha256Hex, hmacHex } from './crypto.js';
+
+/** Keyed hash of a Teams account id (8:live:…): the only account identifier the server stores. */
+export const accountHash = (env, mri) => hmacHex(env.KEY_SALT || 'msteams-personal-mcp', `account|${mri}`);
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const OK = new Set(['member', 'approved', 'review']);
@@ -186,7 +189,7 @@ export async function accessSummary(env, mode) {
   return { waiting: r?.n ?? 0 };
 }
 
-export async function accessOverview(env, mode, now = Date.now()) {
+export async function accessOverview(env, mode, { adminKey = null, now = Date.now() } = {}) {
   await syncReview(env, mode, now);
   const [groups, invites, people, counts] = await Promise.all([
     env.DB.prepare('SELECT conversation_id, name, added_at FROM access_groups ORDER BY added_at').all().then((r) => r.results || []),
@@ -208,6 +211,7 @@ export async function accessOverview(env, mode, now = Date.now()) {
       key: p.account_hash, status: p.status, name: p.name, via: p.via, attempts: p.attempts, requestedAt: iso(p.requested_at), updatedAt: iso(p.updated_at),
     })),
     groupNames: Object.fromEntries(groups.map((g) => [g.conversation_id, g.name])),
+    adminKey,
   });
 }
 
@@ -253,8 +257,14 @@ export async function revokeInvite(env, id) {
 }
 
 /** approve | block | remove | unblock. Block and remove end the person's connections. */
-export async function personAccess(env, key, action, now = Date.now()) {
+/** The admin's linked Teams account always has access. */
+export function approveAdminAccount(env, key, name) {
+  return setPerson(env, key, { status: 'approved', name, via: 'admin account' });
+}
+
+export async function personAccess(env, key, action, { adminKey = null, now = Date.now() } = {}) {
   if (!HASH_RE.test(key || '')) return json({ error: 'Unknown person.' }, 400);
+  if (key === adminKey && action !== 'approve') return json({ error: 'That is your own admin account. Unlink it on the Access page first.' }, 400);
   const row = await getPerson(env, key);
   if (action === 'approve') {
     await setPerson(env, key, { status: 'approved', name: row?.name || null, via: 'admin', now });

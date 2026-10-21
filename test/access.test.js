@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import {
-  accessMode, setMode, decideSignIn, connectionAccess, recheckMember, personAccess, createInvite, inviteValid, REFUSED,
+  accessMode, setMode, decideSignIn, connectionAccess, recheckMember, personAccess, createInvite, inviteValid, REFUSED, approveAdminAccount,
 } from '../src/remote/access.js';
 
 // Real SQLite with the real migrations, wrapped in the small part of the D1 API the code uses.
@@ -113,6 +113,17 @@ t('leaving every access group ends all of that person\'s connections', async () 
   assert.equal(await recheckMember(env, client([]), H1), false);
   assert.equal((await person(env, H1)).status, 'pending');
   assert.equal((await env.DB.prepare('SELECT COUNT(*) AS n FROM users').first()).n, 0);
+});
+
+t('the admin\'s own linked account is approved and cannot be blocked or removed', async () => {
+  const env = { DB: d1() };
+  await approveAdminAccount(env, H1, 'Admin');
+  assert.equal((await person(env, H1)).via, 'admin account');
+  for (const action of ['block', 'remove']) {
+    assert.equal((await personAccess(env, H1, action, { adminKey: H1 })).status, 400, action);
+  }
+  assert.equal((await person(env, H1)).status, 'approved');
+  assert.equal((await decideSignIn(env, { hash: H1, mri: '8:live:admin', client: client() })).ok, true);
 });
 
 t('switching from open to restricted sends earlier connections to review', async () => {

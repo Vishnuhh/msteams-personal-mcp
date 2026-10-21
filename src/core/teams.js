@@ -386,6 +386,29 @@ export function createTeamsClient(getSkypeToken, hooks = {}) {
     return resolveNames ? resolveTitles(chats) : chats;
   }
 
+  /** Every group chat the user is in, from their most recent chats (up to pages × 100), for pickers. */
+  async function listGroupChats({ pages = 5 } = {}) {
+    const out = [];
+    let url = `${CHATSVC}/conversations?startTime=0&pageSize=100&view=msnp24Equivalent&targetType=${encodeURIComponent(TARGET_TYPES)}`;
+    for (let i = 0; i < pages && url; i++) {
+      const data = await request(url);
+      const list = data.conversations || [];
+      for (const c of list) {
+        if (conversationType(c) !== 'group') continue;
+        const lm = c.lastMessage;
+        out.push({
+          id: c.id,
+          title: topicTitle(c),
+          lastActive: lm?.composetime || lm?.originalarrivaltime || null,
+          lastFrom: lm?.imdisplayname || null,
+        });
+      }
+      const next = data._metadata?.backwardLink;
+      url = list.length && next && /(^|\.)teams\.live\.com$/.test(new URL(next).hostname) ? next : null;
+    }
+    return out;
+  }
+
   async function findChats(query, { limit = 100 } = {}) {
     const q = query.toLowerCase();
     const chats = await listChats({ limit, resolveNames: false });
@@ -806,7 +829,7 @@ export function createTeamsClient(getSkypeToken, hooks = {}) {
   }
 
   return {
-    displayName: selfName, membership, getGroupInfo, getPinnedMessages, getMessageResponses, createGroupChat, renameGroup, setMember, leaveGroup,
+    displayName: selfName, membership, listGroupChats, getGroupInfo, getPinnedMessages, getMessageResponses, createGroupChat, renameGroup, setMember, leaveGroup,
     searchMessages, getSharedFiles,
     whoAmI, listChats, findChats, getChatMembers, getMessages, getMessage, getUnread, getMyRecentMessages, getMentions,
     sendMessage, replyToMessage, editMessage, deleteMessage, react, markRead,

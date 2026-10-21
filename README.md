@@ -208,9 +208,12 @@ Personal Microsoft accounts have no company domain, so the server decides access
 `ADMIN_USERNAME` and `ADMIN_PASSWORD` (secrets, password at least 12 characters), open `/admin`, then
 **Access**:
 
-- **Teams groups.** Add one or more group chats (their id looks like `19:…@thread.v2`; ask Claude
-  "what is the chat id of the … group?"). Members get in automatically. Membership is checked with
-  the person's own sign-in when they connect and again once a day, so leaving the group ends their access.
+- **Your Teams account.** Link it once (a sign-in code, like everyone else's). It always has access, and
+  the Access page uses it to list your group chats. It is sealed under a key derived from `KEY_SALT` and
+  `ADMIN_PASSWORD`, used only for that list, and changing the admin password unlinks it.
+- **Teams groups.** Search your group chats and click **Add** (or paste a chat id, `19:…@thread.v2`).
+  Members get in automatically. Membership is checked with the person's own sign-in when they connect
+  and again once a day, so leaving the group ends their access.
 - **Invite links.** For people outside your groups. Set how many uses and how many days; whoever signs
   in through the link keeps access until you remove them.
 - **Waiting.** Anyone else is refused, their Microsoft sign-in is not stored, and they appear here

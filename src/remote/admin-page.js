@@ -106,6 +106,11 @@ td .acts { display: flex; gap: 14px; justify-content: flex-end; white-space: now
 .newlink { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; background: var(--surface); border-radius: var(--radius); padding: 12px 14px; margin-top: 12px; }
 .newlink code { overflow-wrap: anywhere; flex: 1 1 280px; }
 .sub2 { margin: -6px 0 10px; }
+.me { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
+.me p { margin: 0; }
+.bigcode { font-size: 1.5rem; font-weight: 600; letter-spacing: .08em; white-space: nowrap; user-select: all; }
+details summary { cursor: pointer; margin-top: 14px; }
+.you { color: var(--muted); font-size: var(--step-small); }
 .cap input { width: 7em; }
 .actions { display: flex; gap: 10px; flex-wrap: wrap; }
 .scroll { overflow-x: auto; }
@@ -305,7 +310,7 @@ const SCRIPT = `
     var v = p.via || '';
     if (v.indexOf('group:') === 0) return 'Group: ' + (groups[v.slice(6)] || 'a Teams group');
     if (v.indexOf('invite:') === 0) return 'Invite' + (v.length > 7 ? ': ' + v.slice(7) : '');
-    return { admin: 'Approved by you', 'allow-list': 'Allow-list', 'connected before': 'Connected before access was restricted', 'left group': 'Left their group' }[v] || '—';
+    return { admin: 'Approved by you', 'admin account': 'Your admin account', 'allow-list': 'Allow-list', 'connected before': 'Connected before access was restricted', 'left group': 'Left their group' }[v] || '—';
   }
   function decide(p, action, question) {
     return async function () {
@@ -366,11 +371,13 @@ const SCRIPT = `
     });
 
     var allowed = a.people.filter(function (p) { return p.status === 'member' || p.status === 'approved'; });
+    allowed.sort(function (x, y) { return (y.key === a.adminKey) - (x.key === a.adminKey); });
     tb = clear($('aAllowed'));
     if (!allowed.length) empty(tb, 4, 'Nobody yet.');
     allowed.forEach(function (p) {
       var tr = el('tr'); personCell(tr, p, true);
       tr.appendChild(el('td', '', how(p, groups))); tr.appendChild(el('td', '', day(p.updatedAt)));
+      if (p.key === a.adminKey) { tr.firstChild.appendChild(el('span', 'you', ' (you)')); acts(tr, []); tb.appendChild(tr); return; }
       acts(tr, [act('Remove', 'end', decide(p, 'remove', 'Remove ' + (p.name || 'this person') + '? Their connections end now; they can ask again or get in through a group.')),
         act('Block', 'end', decide(p, 'block', 'Block ' + (p.name || 'this person') + '? Their connections end now and they cannot get back in.'))]);
       tb.appendChild(tr);
@@ -386,7 +393,63 @@ const SCRIPT = `
     });
   }
 
-  var RENDER = { access: renderAccess, overview: renderOverview, people: renderPeople, tools: renderTools, cloud: renderCloud, connections: renderConnections, activity: renderActivity, settings: renderSettings };
+  // ------------------------------------------------------------ the admin's Teams account and their group chats
+  var mine = null, mineAt = 0, linkTimer = null;
+  async function renderMe() {
+    var r = await api('/admin/api/teams'); if (r.status === 401) return showSignin();
+    var me = await r.json();
+    $('meLinked').hidden = !me.linked; $('meUnlinked').hidden = me.linked || !$('meCode').hidden;
+    if (me.linked) { text($('meName'), me.name || 'Your account'); text($('meSince'), 'linked ' + day(me.linkedAt)); }
+    $('gPick').hidden = !me.linked; $('gNeedLink').hidden = me.linked;
+    if (me.linked) loadMine(false);
+  }
+  async function loadMine(force) {
+    if (!force && mine && Date.now() - mineAt < 60000) return showMine();
+    text($('gSearchNote'), 'Loading your group chats…');
+    var r = await api('/admin/api/access/my-groups'); var j = await r.json().catch(function () { return {}; });
+    if (!r.ok) { $('gSearchNote').textContent = j.error || 'Could not load your group chats.'; if (j.unlinked) { $('gPick').hidden = true; $('gNeedLink').hidden = false; } return; }
+    mine = j.groups; mineAt = Date.now(); showMine();
+  }
+  function label(g) { return g.title || ('Untitled group' + (g.lastFrom ? ', last message from ' + g.lastFrom : '')); }
+  function showMine() {
+    var q = $('gSearch').value.trim().toLowerCase();
+    var list = mine.filter(function (g) { return !q || label(g).toLowerCase().indexOf(q) >= 0 || g.id.toLowerCase().indexOf(q) >= 0; });
+    $('gSearchNote').textContent = q ? list.length + ' of your ' + mine.length + ' group chats match.' : 'You are in ' + mine.length + ' group chats.';
+    var tb = clear($('gResults'));
+    if (!list.length) empty(tb, 3, q ? 'No group chat matches.' : 'No group chats found.');
+    list.forEach(function (g) {
+      var tr = el('tr'); tr.appendChild(el('td', '', label(g)));
+      tr.appendChild(el('td', '', when(g.lastActive)));
+      if (g.added) { var td = el('td'); var w = el('div', 'acts'); w.appendChild(el('span', 'you', 'Added')); td.appendChild(w); tr.appendChild(td); }
+      else acts(tr, [act('Add', 'go', async function () {
+        try { await post('/admin/api/access/groups', { conversationId: g.id, name: g.title || '' }); g.added = true; } catch (e) { alert(e.message); }
+        load(true);
+      })]);
+      tb.appendChild(tr);
+    });
+  }
+  async function startLink() {
+    $('meErr').textContent = '';
+    try {
+      var j = await post('/admin/api/teams/link/start');
+      $('meUnlinked').hidden = true; $('meCode').hidden = false;
+      text($('meUserCode'), j.userCode); $('meUrl').href = j.verificationUrl; text($('meUrl'), j.verificationUrl.replace('https://', '').replace('http://', ''));
+      $('meCopy').onclick = function () { navigator.clipboard.writeText(j.userCode).then(function () { $('meCopy').textContent = 'Copied'; setTimeout(function () { $('meCopy').textContent = 'Copy code'; }, 1500); }); };
+      pollLink(j.interval);
+    } catch (e) { $('meErr').textContent = e.message; }
+  }
+  function pollLink(sec) {
+    clearTimeout(linkTimer);
+    linkTimer = setTimeout(async function () {
+      var r = await api('/admin/api/teams/link/poll', { method: 'POST' }); var j = await r.json().catch(function () { return {}; });
+      if (j.status === 'pending') return pollLink((j.interval || 5) + 1);
+      $('meCode').hidden = true;
+      if (j.status === 'linked') { mine = null; load(true); return; }
+      $('meUnlinked').hidden = false; $('meErr').textContent = j.error || 'Linking failed. Try again.';
+    }, Math.max(4, sec) * 1000);
+  }
+
+  var RENDER = { access: function () { renderAccess(); renderMe(); }, overview: renderOverview, people: renderPeople, tools: renderTools, cloud: renderCloud, connections: renderConnections, activity: renderActivity, settings: renderSettings };
 
   function route(keepScroll) {
     var h = decodeURIComponent((location.hash || '#overview').slice(1));
@@ -453,6 +516,14 @@ const SCRIPT = `
       $('newLinkText').textContent = j.link; $('newLink').hidden = false; $('iLabel').value = ''; load(true);
     } catch (err) { $('iMsg').textContent = err.message; }
   });
+  $('meLink').addEventListener('click', startLink);
+  $('meUnlink').addEventListener('click', async function () {
+    if (!confirm('Unlink your Teams account? Your account keeps its access; group search stops until you link again.')) return;
+    try { await post('/admin/api/teams/unlink'); } catch (e) { alert(e.message); }
+    mine = null; load(true);
+  });
+  $('gSearch').addEventListener('input', function () { if (mine) showMine(); });
+  $('gReload').addEventListener('click', function () { loadMine(true); });
   $('copyLink').addEventListener('click', function () {
     navigator.clipboard.writeText($('newLinkText').textContent).then(function () { $('copyLink').textContent = 'Copied'; setTimeout(function () { $('copyLink').textContent = 'Copy link'; }, 1500); });
   });
@@ -548,12 +619,28 @@ ${configured ? '' : `<div class="notset"><h1>Admin</h1><p>Admin sign-in is not s
       <div class="head"><h1 id="h-access">Access</h1>
         <div class="seg" role="group" aria-label="Who can connect"><button type="button" id="modeRestricted" aria-pressed="false">Restricted</button><button type="button" id="modeOpen" aria-pressed="false">Open</button></div></div>
       <p class="muted" id="modeNote" style="max-width:80ch;margin-top:-20px"></p>
+      <div class="tile">
+        <div class="me" id="meLinked" hidden><p>Your Teams account: <b id="meName"></b> <span class="you" id="meSince"></span>. It always has access, and is used here only to list your group chats.</p><button class="link" type="button" id="meUnlink">Unlink</button></div>
+        <div class="me" id="meUnlinked" hidden><p class="muted">Link your own Teams account: it always has access, and you can pick groups from your group chats below.</p><button class="btn" type="button" id="meLink">Link my Teams account</button></div>
+        <div id="meCode" hidden><p class="muted">Enter this code at <a id="meUrl" target="_blank" rel="noopener"></a> and sign in with your personal Microsoft account.</p>
+          <div class="cap" style="margin-top:10px"><span class="bigcode" id="meUserCode"></span><button class="btn quiet" type="button" id="meCopy">Copy code</button></div>
+          <p class="muted" style="margin-top:8px">Waiting for you to approve at Microsoft…</p></div>
+        <p class="err" id="meErr" role="alert"></p>
+      </div>
       <div><h2>Waiting <span class="muted" id="waitingCount"></span></h2>
         <div class="scroll"><table><thead><tr><th>Person</th><th>Why</th><th>When</th><th class="num">Tries</th><th></th></tr></thead><tbody id="aWaiting"></tbody></table></div></div>
       <div><h2>Teams groups</h2>
-        <p class="muted sub2">Members of these group chats get in automatically and are re-checked daily; leaving the group ends their access. To find a group's id, ask Claude: “What is the chat id of the … group?”</p>
+        <p class="muted sub2">Members of these group chats get in automatically and are re-checked daily; leaving the group ends their access.</p>
         <div class="scroll"><table><thead><tr><th>Group</th><th>Chat id</th><th class="num">People in</th><th></th></tr></thead><tbody id="aGroups"></tbody></table></div>
-        <form class="inline" id="groupForm"><input class="grow" id="gId" placeholder="19:…@thread.v2" aria-label="Group chat id" required spellcheck="false" autocomplete="off"><input id="gName" placeholder="Name (optional)" aria-label="Group name"><button class="btn quiet" type="submit">Add group</button></form>
+        <div id="gPick" hidden>
+          <div class="inline" style="margin-top:18px"><input class="grow" id="gSearch" type="search" placeholder="Search your group chats" aria-label="Search your group chats" autocomplete="off"><button class="btn quiet" type="button" id="gReload">Reload</button></div>
+          <p class="muted" id="gSearchNote" style="margin-top:8px"></p>
+          <div class="scroll" style="max-height:420px;overflow-y:auto;margin-top:6px"><table><thead><tr><th>Your group chats</th><th>Last active</th><th></th></tr></thead><tbody id="gResults"></tbody></table></div>
+        </div>
+        <p class="muted" id="gNeedLink" hidden style="margin-top:14px">Link your Teams account above to search and add your group chats.</p>
+        <details><summary class="muted">Add by chat id</summary>
+          <form class="inline" id="groupForm"><input class="grow" id="gId" placeholder="19:…@thread.v2" aria-label="Group chat id" required spellcheck="false" autocomplete="off"><input id="gName" placeholder="Name (optional)" aria-label="Group name"><button class="btn quiet" type="submit">Add group</button></form>
+        </details>
         <p class="err" id="gMsg" role="alert"></p></div>
       <div><h2>Invite links</h2>
         <p class="muted sub2">For people outside your groups, such as customers. Whoever signs in through the link has access until you remove them.</p>
