@@ -5,6 +5,13 @@ What changed in each release. Newest first. The server shows this page at `/chan
 Format: every release has a `## [version] - date` heading, one summary line, and short bullets under
 Added, Changed, Fixed or Security. A release cannot be deployed without its entry (`npm test` checks it).
 
+## [0.7.1] - 2026-10-21
+
+Connections remember their app and your name.
+
+### Changed
+- Each connection now records which app created it (for example Claude or Claude Code) and your Teams display name, so connections can be told apart and managed.
+
 ## [0.7.0] - 2026-10-21
 
 Safer shared servers, fair-use limits, group chat tools and this changelog.
@@ -28,7 +35,6 @@ Safer shared servers, fair-use limits, group chat tools and this changelog.
 ### Changed
 - Per-person limits: 120 requests a minute, 10 multi-chat searches a minute, 10 changes a minute and 200 a day.
 - Short caching of chat lists, and a retry when Microsoft asks to slow down.
-- Admin counters at `/admin/stats` (anonymous, needs an admin token).
 - The version comes from `package.json` everywhere.
 
 ## [0.6.0] - 2026-10-21

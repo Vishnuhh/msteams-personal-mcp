@@ -65,6 +65,12 @@ name = "WRITE_LIMITER"
 namespace_id = "1007"
 simple = { limit = 10, period = 60 }
 
+# Admin sign-in attempts and admin API calls.
+[[ratelimits]]
+name = "ADMIN_LIMITER"
+namespace_id = "1008"
+simple = { limit = 20, period = 60 }
+
 # Nightly cleanup of unused connections, apps and expired codes.
 [triggers]
 crons = ["17 3 * * *"]

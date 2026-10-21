@@ -755,7 +755,7 @@ export function createTeamsClient(getSkypeToken) {
   }
 
   return {
-    getGroupInfo, getPinnedMessages, getMessageResponses, createGroupChat, renameGroup, setMember, leaveGroup,
+    displayName: selfName, getGroupInfo, getPinnedMessages, getMessageResponses, createGroupChat, renameGroup, setMember, leaveGroup,
     searchMessages, getSharedFiles,
     whoAmI, listChats, findChats, getChatMembers, getMessages, getMessage, getUnread, getMyRecentMessages, getMentions,
     sendMessage, replyToMessage, editMessage, deleteMessage, react, markRead,

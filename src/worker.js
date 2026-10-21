@@ -10,7 +10,9 @@
 //   GET  /.well-known/oauth-protected-resource[/mcp]   RFC 9728 metadata
 //   GET  /.well-known/oauth-authorization-server       RFC 8414 metadata
 //   POST /register  GET /authorize  POST /token  POST /revoke  POST /oauth/deny   OAuth 2.1 (see remote/oauth-server.js)
-//   GET  /admin/stats              anonymous counters (needs ADMIN_TOKEN)
+//   GET  /admin                    admin sign-in + usage dashboard (ADMIN_USERNAME / ADMIN_PASSWORD)
+//   GET  /admin/api/overview       dashboard data (admin session cookie, or Bearer ADMIN_TOKEN)
+//   GET  /admin/stats              same data for scripts (Bearer ADMIN_TOKEN)
 //   GET  /health                   liveness
 //
 // Optional settings (wrangler vars or secrets):
@@ -18,7 +20,8 @@
 //   ALLOWED_ACCOUNTS       comma-separated Teams ids (8:live:.cid.…) allowed to sign in
 //   DISABLE_PERSONAL_URLS  "true" = connectors only; /mcp/<key> URLs and new personal URLs are refused
 //   NEW_CONNECTION_ALERTS  "false" = don't post a note to the user's Teams Notes on each new connection
-//   ADMIN_TOKEN            bearer token for /admin/stats (secret)
+//   ADMIN_USERNAME, ADMIN_PASSWORD   admin sign-in for /admin (secrets; password at least 12 characters)
+//   ADMIN_TOKEN            bearer token for /admin/stats and /admin/api/* (secret, for scripts)
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { CfWorkerJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/cfworker';
@@ -31,6 +34,7 @@ import { renderPage } from './remote/page.js';
 import { renderAuthorizePage, renderAuthorizeError } from './remote/authorize-page.js';
 import { renderChangelogPage } from './remote/changelog.js';
 import { limit, toolGuard } from './remote/limits.js';
+import { adminConfigured, isAdmin, login as adminLogin, logout as adminLogout, overview as adminOverview, endConnection, renderAdminPage } from './remote/admin.js';
 import CHANGELOG from '../CHANGELOG.md';
 import pkg from '../package.json';
 import {
@@ -171,13 +175,16 @@ async function loginPoll(request, env, ctx) {
     skype: { token: skype.token, expiresAt: skype.expiresAt, region: skype.region },
   });
   await env.DB.batch([
-    env.DB.prepare('INSERT INTO users (id, data, created_at, updated_at, last_used_at, account_hash) VALUES (?, ?, ?, ?, ?, ?)')
-      .bind(userId, data, now, now, now, mri ? await accountHash(env, mri) : null),
+    env.DB.prepare('INSERT INTO users (id, data, created_at, updated_at, last_used_at, account_hash, app_name) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .bind(userId, data, now, now, now, mri ? await accountHash(env, mri) : null, req !== undefined ? ((await requestInfo(env, req))?.clientName || 'MCP app') : 'Personal URL'),
     env.DB.prepare('DELETE FROM logins WHERE id = ?').bind(id),
   ]);
   stat(env, ctx, 'signin');
 
   const origin = new URL(request.url).origin;
+  ctx.waitUntil(createTeamsClient(async () => skype).displayName()
+    .then((name) => name && env.DB.prepare('UPDATE users SET account_name = ? WHERE id = ?').bind(name, userId).run())
+    .catch(() => {}));
   if (cfg.alerts) {
     const info = req !== undefined ? await requestInfo(env, req) : null;
     ctx.waitUntil(newConnectionAlert(skype, {
@@ -256,7 +263,7 @@ async function handleMcp(request, env, url, ctx) {
   const accessKey = found.key;
   if (!/^tpm_[A-Za-z0-9_-]{20,}$/.test(accessKey)) return unauthorized(url, 'Invalid access token. Sign in again.', 'invalid_token');
   const userId = await sha256Hex(accessKey);
-  const row = await env.DB.prepare('SELECT created_at, last_used_at, account_hash FROM users WHERE id = ?').bind(userId).first();
+  const row = await env.DB.prepare('SELECT created_at, last_used_at, account_hash, account_name FROM users WHERE id = ?').bind(userId).first();
   if (!row) return unauthorized(url, `This connection was revoked or has expired. Sign in again${found.via === 'path' ? ` at ${signInUrl}` : ''}.`, 'invalid_token');
 
   const now = Date.now();
@@ -275,10 +282,12 @@ async function handleMcp(request, env, url, ctx) {
   const getSkypeToken = userTokenSource(env, accessKey, userId);
   const client = createTeamsClient(getSkypeToken);
   // Date-level last use, written at most once a day; backfill the account hash for older connections.
-  if (new Date(lastUsed).toISOString().slice(0, 10) !== today() || !row.account_hash) {
+  stat(env, ctx, 'mcp_request');
+  if (new Date(lastUsed).toISOString().slice(0, 10) !== today() || !row.account_hash || !row.account_name) {
     ctx.waitUntil((async () => {
       const hash = row.account_hash || (await getSkypeToken().then((s) => selfMri(s.token)).then((m) => (m ? accountHash(env, m) : null)).catch(() => null));
-      await env.DB.prepare('UPDATE users SET last_used_at = ?, account_hash = ? WHERE id = ?').bind(now, hash, userId).run();
+      const name = row.account_name || (await client.displayName().catch(() => null));
+      await env.DB.prepare('UPDATE users SET last_used_at = ?, account_hash = ?, account_name = ? WHERE id = ?').bind(now, hash, name, userId).run();
     })().catch(() => {}));
   }
 
@@ -312,7 +321,10 @@ async function handleMcp(request, env, url, ctx) {
     return { signedOut: true, connectionsEnded: ended, signInAgainAt: signInUrl };
   }));
 
-  registerTeamsTools(server, client, { beforeCall: toolGuard(env, userId, { onLimited: (m) => stat(env, ctx, m) }) });
+  const guard = toolGuard(env, userId, { onLimited: (m) => stat(env, ctx, m) });
+  registerTeamsTools(server, client, {
+    beforeCall: async (name, kind) => { stat(env, ctx, `tool:${name}`); await guard(name, kind); },
+  });
   registerTeamsPrompts(server);
 
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
@@ -321,27 +333,6 @@ async function handleMcp(request, env, url, ctx) {
 }
 
 // ---------------------------------------------------------------- admin + housekeeping
-
-async function adminStats(request, env) {
-  if (!env.ADMIN_TOKEN) return json({ error: 'Not found' }, 404);
-  const auth = (request.headers.get('Authorization') || '').replace(/^Bearer\s+/i, '');
-  if (!safeEqual(auth, String(env.ADMIN_TOKEN))) return json({ error: 'Unauthorized' }, 401, { 'WWW-Authenticate': 'Bearer' });
-  const now = Date.now();
-  const count = async (sql, ...args) => (await env.DB.prepare(sql).bind(...args).first())?.n ?? 0;
-  const rows = (await env.DB.prepare('SELECT day, metric, count FROM stats WHERE day >= ? ORDER BY day DESC').bind(new Date(now - 30 * DAY_MS).toISOString().slice(0, 10)).all()).results || [];
-  const days = {};
-  for (const r of rows) (days[r.day] ||= {})[r.metric] = r.count;
-  return json({
-    version: VERSION,
-    connections: await count('SELECT COUNT(*) AS n FROM users'),
-    activeLast7Days: await count('SELECT COUNT(*) AS n FROM users WHERE COALESCE(last_used_at, created_at) >= ?', now - 7 * DAY_MS),
-    activeLast30Days: await count('SELECT COUNT(*) AS n FROM users WHERE COALESCE(last_used_at, created_at) >= ?', now - 30 * DAY_MS),
-    accounts: await count('SELECT COUNT(DISTINCT account_hash) AS n FROM users WHERE account_hash IS NOT NULL'),
-    registeredApps: await count('SELECT COUNT(*) AS n FROM oauth_clients'),
-    settings: (({ accessCodeRequired, allowList, personalUrls, alerts }) => ({ accessCodeRequired, allowListSize: allowList.length, personalUrls, alerts }))(settings(env)),
-    last30Days: days,
-  });
-}
 
 /** Daily cron: remove what is no longer needed. */
 async function cleanup(env) {
@@ -357,6 +348,7 @@ async function cleanup(env) {
     env.DB.prepare('DELETE FROM stats WHERE day < ?').bind(new Date(now - 90 * DAY_MS).toISOString().slice(0, 10)),
   ]);
   const expired = results[0]?.meta?.changes || 0;
+  await env.DB.prepare("INSERT INTO stats (day, metric, count) VALUES (?, 'cleanup_run', 1) ON CONFLICT(day, metric) DO UPDATE SET count = count + 1").bind(today()).run();
   if (expired) {
     await env.DB.prepare('INSERT INTO stats (day, metric, count) VALUES (?, ?, ?) ON CONFLICT(day, metric) DO UPDATE SET count = count + excluded.count')
       .bind(today(), 'expired', expired).run();
@@ -370,7 +362,8 @@ const LIMITS = [
   { match: (p, m) => m === 'POST' && p === '/api/login/start', binding: 'LOGIN_START_LIMITER', message: 'Too many sign-in attempts. Wait a minute and try again.' },
   { match: (p, m) => m === 'POST' && p === '/api/login/poll', binding: 'LOGIN_POLL_LIMITER', message: 'Checking too often. Wait a few seconds.' },
   { match: (p, m) => m === 'POST' && (p === '/mcp' || p.startsWith('/mcp/')), binding: 'MCP_LIMITER', message: 'Too many requests. Slow down and retry shortly.' },
-  { match: (p) => ['/register', '/authorize', '/token', '/revoke', '/oauth/deny', '/admin/stats'].includes(p), binding: 'OAUTH_LIMITER', message: 'Too many requests. Wait a minute and try again.' },
+  { match: (p) => ['/register', '/authorize', '/token', '/revoke', '/oauth/deny'].includes(p), binding: 'OAUTH_LIMITER', message: 'Too many requests. Wait a minute and try again.' },
+  { match: (p) => p.startsWith('/admin/'), binding: 'ADMIN_LIMITER', message: 'Too many admin requests or sign-in attempts. Wait a minute and try again.' },
 ];
 
 async function rateLimited(request, env, url, ctx) {
@@ -431,7 +424,27 @@ export default {
       if (path === '/api/login/start' && method === 'POST') return await loginStart(request, env, ctx);
       if (path === '/api/login/poll' && method === 'POST') return await loginPoll(request, env, ctx);
 
-      if (path === '/admin/stats' && method === 'GET') return await adminStats(request, env);
+      // Admin area
+      if ((path === '/admin' || path === '/admin/') && method === 'GET') return html(renderAdminPage({ configured: adminConfigured(env) }));
+      if (path === '/admin/login' && method === 'POST') return await adminLogin(request, env, () => stat(env, ctx, 'admin_signin_failed'));
+      if (path.startsWith('/admin/')) {
+        // Cookie-authenticated changes need a custom header, which other sites cannot send (no CORS for /admin).
+        if (method === 'POST' && request.headers.get('X-Admin') !== '1') return json({ error: 'Missing X-Admin header.' }, 400);
+        if (path === '/admin/logout' && method === 'POST') return adminLogout();
+        if (!(await isAdmin(request, env))) return json({ error: 'Sign in at /admin.' }, 401);
+        const s = settings(env);
+        const settingsView = { accessCodeRequired: s.accessCodeRequired, allowListSize: s.allowList.length, personalUrls: s.personalUrls, alerts: s.alerts };
+        if ((path === '/admin/api/overview' || path === '/admin/stats') && method === 'GET') {
+          return json(await adminOverview(env, { version: VERSION, settings: settingsView, inactiveDays: INACTIVE_DAYS }));
+        }
+        const end = path.match(/^\/admin\/api\/connections\/([0-9a-f]{64})\/end$/);
+        if (end && method === 'POST') {
+          skypeCache.delete(end[1]);
+          stat(env, ctx, 'admin_ended_connection');
+          return await endConnection(env, end[1]);
+        }
+        return json({ error: 'Not found' }, 404);
+      }
       if (path === '/mcp' || path.startsWith('/mcp/')) return await handleMcp(request, env, url, ctx);
       return json({ error: 'Not found' }, 404);
     } catch (e) {
