@@ -72,7 +72,10 @@ code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size
   display: flex; flex-direction: column; justify-content: center; gap: 10px; padding: clamp(16px, 1.8vw, 28px); min-width: 0; }
 .frame .lbl { font-size: var(--step-small); color: var(--muted); }
 .frame .addr { font-weight: 600; letter-spacing: -0.02em; font-size: clamp(1.0625rem, 0.75rem + 0.8vw, 1.5rem); line-height: 1.15; overflow-wrap: anywhere; }
-.frame .code { font-weight: 600; letter-spacing: .06em; font-size: var(--step-head); line-height: 1; color: var(--accent); font-variant-numeric: tabular-nums; }
+.frame { container-type: inline-size; }
+/* The sign-in code: one line, no spaces, sized to the frame, selected whole on click, so copy-paste is exact. */
+.frame .code { font-weight: 600; letter-spacing: .06em; font-size: min(var(--step-head), 13cqi); line-height: 1; color: var(--accent);
+  font-variant-numeric: tabular-nums; white-space: nowrap; user-select: all; cursor: text; }
 .frame .code.done { color: var(--ink); letter-spacing: -0.03em; }
 .frame .copy { align-self: flex-start; font-size: var(--step-small); padding: .7em 1em; }
 .frame .lbl a { font-weight: 500; }
@@ -237,11 +240,16 @@ code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size
   /* personal URL: the sign-in code takes the frame's place in the sentence */
   var loginId = null, timer = null;
   function status(msg, err) { var s = $('status'); s.textContent = msg; s.className = 'status' + (err ? ' err' : ''); }
-  function frame(label, big, cls, hint) {
+  function frame(label, big, cls, hint, copyText) {
     var f = $('frame'); f.innerHTML = '';
     var l = document.createElement('span'); l.className = 'lbl'; l.textContent = label; f.appendChild(l);
     var b = document.createElement('span'); b.className = cls; b.textContent = big; f.appendChild(b);
     if (hint) f.appendChild(hint);
+    if (copyText) {
+      var btn = document.createElement('button'); btn.type = 'button'; btn.className = 'btn copy'; btn.textContent = 'Copy code';
+      btn.addEventListener('click', function () { copy(copyText, btn, 'Copy code'); });
+      f.appendChild(btn);
+    }
   }
   if ($('start')) $('start').addEventListener('click', async function () {
     $('start').disabled = true; status('Asking Microsoft for a code…');
@@ -256,7 +264,7 @@ code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size
       var a = document.createElement('a'); a.href = j.verificationUrl; a.target = '_blank'; a.rel = 'noopener';
       a.textContent = j.verificationUrl.replace(/^https?:\\/\\//, '');
       hint.appendChild(document.createTextNode('Enter it at ')); hint.appendChild(a);
-      frame('Your sign-in code', c.length === 9 ? c.slice(0, 4) + ' ' + c.slice(4) : c, 'code', hint);
+      frame('Your sign-in code', c, 'code', hint, c);
       $('frame').scrollIntoView({ behavior: reduced ? 'auto' : 'smooth', block: 'center' });
       status('Waiting for you to approve at Microsoft…');
       $('status').classList.add('pulse');

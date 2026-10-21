@@ -26,7 +26,11 @@ main { flex: 1; display: flex; flex-direction: column; justify-content: center; 
 .frame { grid-column: 2; grid-row: 1; aspect-ratio: 16 / 9; background: var(--surface); border-radius: var(--radius); display: flex; flex-direction: column;
   justify-content: center; gap: 6px; padding: clamp(14px, 1.6vw, 24px); }
 .frame .lbl { font-size: var(--step-small); color: var(--muted); }
-.frame .code { font-weight: 600; letter-spacing: .06em; font-size: var(--step-head); line-height: 1; font-variant-numeric: tabular-nums; }
+.frame { container-type: inline-size; }
+/* The sign-in code: one line, no spaces, sized to the frame, selected whole on click, so copy-paste is exact. */
+.frame .code { font-weight: 600; letter-spacing: .06em; font-size: min(var(--step-head), 13cqi); line-height: 1; font-variant-numeric: tabular-nums;
+  white-space: nowrap; user-select: all; cursor: text; }
+.frame .copycode { align-self: flex-start; font-size: var(--step-small); padding: .7em 1em; }
 .frame .code.live { color: var(--accent); }
 .frame .code.done { letter-spacing: -0.03em; }
 .foot { display: grid; grid-template-columns: repeat(12, 1fr); column-gap: 24px; row-gap: 20px; align-items: end; }
@@ -90,8 +94,12 @@ const SCRIPT = `
       if (!r.ok) throw new Error(j.error || 'Could not start sign-in.');
       loginId = j.loginId;
       var c = String(j.userCode);
-      $('code').textContent = c.length === 9 ? c.slice(0, 4) + ' ' + c.slice(4) : c;
+      $('code').textContent = c;
       $('code').className = 'code live';
+      $('copyCode').hidden = false;
+      $('copyCode').onclick = function () {
+        navigator.clipboard.writeText(c).then(function () { $('copyCode').textContent = 'Copied'; setTimeout(function () { $('copyCode').textContent = 'Copy code'; }, 1500); });
+      };
       $('codeLbl').textContent = 'Your sign-in code';
       var a = document.createElement('a');
       a.href = j.verificationUrl; a.target = '_blank'; a.rel = 'noopener';
@@ -109,7 +117,7 @@ const SCRIPT = `
       var j = await r.json();
       if (j.status === 'approved' && j.redirect) {
         $('status').classList.remove('pulse');
-        $('code').textContent = 'Connected'; $('code').className = 'code done';
+        $('code').textContent = 'Connected'; $('code').className = 'code done'; $('copyCode').hidden = true;
         $('codeLbl').textContent = 'Signed in'; $('codeHint').textContent = 'Returning you to the app…';
         status('Signed in. Returning you to the app…');
         location.assign(j.redirect);
@@ -137,6 +145,7 @@ export function renderAuthorizePage({ reqId, clientName, redirectHost, accessCod
     <div class="frame rise" style="--i:1" aria-live="polite">
       <span class="lbl" id="codeLbl">Your sign-in code appears here</span>
       <span class="code" id="code">Not started</span>
+      <button class="btn copycode" type="button" id="copyCode" hidden>Copy code</button>
       <span class="lbl" id="codeHint">Press Get sign-in code to start.</span>
     </div>
     <span class="half r rise" style="--i:2" aria-hidden="true">in ${esc(short)}.</span>

@@ -5,6 +5,16 @@ What changed in each release. Newest first. The server shows this page at `/chan
 Format: every release has a `## [version] - date` heading, one summary line, and short bullets under
 Added, Changed, Fixed or Security. A release cannot be deployed without its entry (`npm test` checks it).
 
+## [0.7.3] - 2026-10-21
+
+Sign-in codes copy cleanly.
+
+### Fixed
+- The sign-in code is shown as one word on one line, with no space in the middle, so copy and paste works as is.
+
+### Added
+- A Copy code button next to the sign-in code; clicking the code also selects all of it.
+
 ## [0.7.2] - 2026-10-21
 
 Better-formatted messages.
