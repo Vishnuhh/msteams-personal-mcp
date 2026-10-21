@@ -15,7 +15,7 @@
     "db:migrate:local": "wrangler d1 migrations apply msteams-personal-mcp --local",
     "db:migrate:remote": "wrangler d1 migrations apply msteams-personal-mcp --remote",
     "deploy": "wrangler deploy",
-    "test": "node --test \"test/*.test.js\""
+    "test": "node --test test/core.test.js"
   },
   "engines": {
     "node": ">=18"

@@ -199,6 +199,10 @@ section.s { padding-top: var(--gap); }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .55; } }
 
 /* ---------- phone ---------- */
+@media (max-width: 1024px) {
+  .foot { min-height: 0; }
+  .foot .big { margin-top: clamp(96px, 16vw, 160px); }
+}
 @media (max-width: 760px) {
   .nav .links .link:not(:last-of-type) { display: none; }
   .hero { height: auto; }
@@ -388,14 +392,20 @@ section.s { padding-top: var(--gap); }
 (function () {
   var $ = function (id) { return document.getElementById(id); };
   var host = location.host;
-  $('hostLine').textContent = host;
+  // The server's own address is the footer's headline, sized so its longest line fills the width.
+  // On narrow screens it breaks after the first dot (teams-mcp. / example.com).
   function fitHost() {
-    var el = $('hostLine'); el.style.fontSize = '100px';
-    var w = el.parentNode.clientWidth - 2 * parseFloat(getComputedStyle(el.parentNode).paddingLeft || 0);
-    var size = Math.max(40, Math.min(260, 100 * (w * 0.96) / el.scrollWidth));
-    el.style.fontSize = size + 'px';
+    var el = $('hostLine'), dot = host.indexOf('.');
+    var narrow = innerWidth <= 760 && dot > 0 && dot < host.length - 1;
+    el.innerHTML = '';
+    el.appendChild(document.createTextNode(narrow ? host.slice(0, dot + 1) : host));
+    if (narrow) { el.appendChild(document.createElement('br')); el.appendChild(document.createTextNode(host.slice(dot + 1))); }
+    el.style.fontSize = '100px';
+    var cs = getComputedStyle(el.parentNode);
+    var w = el.parentNode.clientWidth - parseFloat(cs.paddingLeft || 0) - parseFloat(cs.paddingRight || 0);
+    el.style.fontSize = Math.max(18, Math.min(260, 100 * (w * 0.96) / el.scrollWidth)) + 'px';
   }
-  $('hostLine').style.display = 'inline-block'; $('hostLine').style.whiteSpace = 'nowrap';
+  $('hostLine').style.display = 'inline-block'; $('hostLine').style.whiteSpace = 'nowrap'; $('hostLine').style.maxWidth = '100%';
   fitHost(); addEventListener('resize', fitHost);
   if (document.fonts) document.fonts.ready.then(fitHost);
   Array.prototype.forEach.call(document.querySelectorAll('.host'), function (n) { n.textContent = host; });
