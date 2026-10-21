@@ -202,7 +202,21 @@ Add → Custom domain**.)
 
 Also set `REPO_URL` in `wrangler.toml` to your repository so the sign-in page links to it.
 
-### 7. Share it
+### 7. (Optional) Server settings
+
+Set these as Wrangler vars or secrets (`npx wrangler secret put NAME`). All are optional.
+
+| Setting | Effect |
+|---|---|
+| `ACCESS_CODE` (secret) | People must enter this team access code before they can sign in. |
+| `ALLOWED_ACCOUNTS` | Comma-separated Teams ids (`8:live:.cid.…`) allowed to sign in. Others see their id to send to you. |
+| `DISABLE_PERSONAL_URLS` | `true` = connectors only: personal URLs are refused and no longer offered. |
+| `NEW_CONNECTION_ALERTS` | `false` = don't post a note to the user's Teams Notes on each new connection (on by default). |
+| `ADMIN_TOKEN` (secret) | Enables `GET /admin/stats` (anonymous counts) with `Authorization: Bearer <token>`. |
+
+Connections unused for 90 days end automatically; a nightly job (cron in `wrangler.toml`) removes stale data.
+
+### 8. Share it
 
 Send people the base URL, for example `https://teams-mcp.yourdomain.com`. Each person follows
 [Connecting a client to a remote server](#connecting-a-client-to-a-remote-server).
@@ -344,8 +358,13 @@ app also revokes it. You can also remove the app's access in your Microsoft acco
 | `teams_send_message` | Send a message, only when you explicitly ask. `@[Name](id)` becomes a real @mention | ✓ | ✓ |
 | `teams_reply_to_message` | Reply quoting a specific message (shows as a Teams reply), with @mentions | ✓ | ✓ |
 | `teams_edit_message` / `teams_delete_message` | Edit or delete your own messages (others' messages are refused) | ✓ | ✓ |
+| `teams_get_group_info` | A group at a glance: members, admins, creator, pinned messages | ✓ | ✓ |
+| `teams_get_pinned_messages` | Messages pinned in a chat | ✓ | ✓ |
+| `teams_get_message_responses` | For one message: who reacted, replied, wrote since, or hasn't responded | ✓ | ✓ |
+| `teams_create_group_chat` / `teams_rename_group` | Create or rename a group (asks first) | ✓ | ✓ |
+| `teams_add_group_member` / `teams_remove_group_member` / `teams_leave_group` | Change group membership (asks first) | ✓ | ✓ |
 | `teams_status` | Which account is signed in | ✓ | ✓ |
-| `teams_logout` | Delete the saved sign-in (remote: revokes your URL) | ✓ | ✓ |
+| `teams_logout` | Disconnect. Remote: `everywhere=true` ends every connection of your account | ✓ | ✓ |
 | `teams_login` | Start device-code sign-in from inside the client | ✓ | (use the web page) |
 
 ### Prompts (one-click workflows)
@@ -357,6 +376,7 @@ Clients that support MCP prompts (Claude Code `/` menu, Claude desktop "+" menu,
 | `catch_me_up` | Unread messages and @mentions, summarized per chat, with "Needs your reply" vs "FYI" and suggested replies/reactions. Sends nothing until you confirm. |
 | `draft_reply` | Reads a chat (argument: chat or person name) and drafts a reply in your style, with mentions if needed. Sends only after you say "send". |
 | `daily_digest` | Today's key discussions, decisions and action items, what you said, and what's waiting on you. Read-only. |
+| `group_digest` | One group since a time: decisions, action items with owners, open questions, what waits on you. Read-only. |
 
 ---
 
@@ -378,12 +398,19 @@ Clients that support MCP prompts (Claude Code `/` menu, Claude desktop "+" menu,
   - Pending sign-in codes are sealed the same way and expire after 15 minutes.
   - Per-IP rate limits protect the public endpoints: 5 sign-in starts, 40 sign-in checks and 300 MCP
     requests per minute (Cloudflare rate-limit bindings in `wrangler.toml`).
+  - Per-person limits: 120 requests a minute, 10 multi-chat searches a minute, 10 changes a minute and
+    200 changes a day. Microsoft "slow down" responses are retried once, then explained.
+  - Each new connection posts a note to the person's own Teams Notes, connections end after 90 days
+    unused, and `teams_logout` with `everywhere=true` ends all of an account's connections.
+  - Optional access gate (team access code or allowed accounts); see the server settings above.
 - **App sign-in (OAuth 2.1).** The server is its own authorization server: discovery
   (RFC 9728 / RFC 8414), dynamic client registration (RFC 7591), authorization code with PKCE S256
   only, single-use codes valid 10 minutes, exact redirect-URI matching, resource indicators
   (RFC 8707), `iss` in the redirect (RFC 9207) and token revocation (RFC 7009). The access token it
   issues is the same 256-bit per-user key, so the encryption above applies unchanged. The sign-in
   page names the requesting app and where you will be sent back, and cannot be framed.
+- **Tools are labelled** read-only, changing or destructive (MCP annotations), so apps ask before
+  changes, and message text is marked as content from other people, not instructions.
 - **Sending messages** is a separate tool, described to the AI as "only when the user explicitly
   asked". Most clients also ask you to approve each tool call.
 - **Self-hosting is the most private option.** Whoever runs a server controls its code. Only use
@@ -423,6 +450,10 @@ Clients that support MCP prompts (Claude Code `/` menu, Claude desktop "+" menu,
 ---
 
 ## Development
+
+Every release is listed in [CHANGELOG.md](CHANGELOG.md), which the server also shows at `/changelog`.
+To start a release: `npm run release -- <version> "summary"`, edit the drafted entry, `npm test`, commit and tag.
+Tests fail if the version has no finished changelog entry.
 
 ```bash
 npm test                 # unit tests (node:test)

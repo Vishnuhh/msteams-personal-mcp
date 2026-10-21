@@ -5,8 +5,11 @@
 
 const escapeAttr = (s) => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
 
-export function renderPage({ repoUrl = 'https://github.com/', version = '' } = {}) {
+export function renderPage({ repoUrl = 'https://github.com/', version = '', accessCodeRequired = false, personalUrls = true } = {}) {
   const repo = escapeAttr(repoUrl);
+  const access = accessCodeRequired
+    ? '<div class="access"><label for="accessCode">Team access code</label><input id="accessCode" autocomplete="off" spellcheck="false"></div>'
+    : '';
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -77,6 +80,11 @@ code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size
 .foot .lead { grid-column: 1 / 7; max-width: 40ch; }
 .foot .alt { grid-column: 8 / 13; justify-self: end; text-align: right; display: grid; gap: 4px; justify-items: end; }
 .status { font-size: var(--step-small); color: var(--muted); max-width: 38ch; min-height: 1.5em; }
+.access { display: grid; gap: 6px; justify-items: inherit; }
+.access label { font-size: var(--step-small); color: var(--muted); }
+.access input { font: 500 var(--step-body)/1.2 var(--font); padding: .7em .9em; border: 0; border-radius: var(--radius); background: var(--surface); color: var(--ink); width: min(260px, 100%); }
+.access input:focus { outline: 3px solid var(--accent); outline-offset: 2px; }
+
 .status.err { color: var(--accent); }
 
 /* your personal URL (after sign-in) */
@@ -128,7 +136,7 @@ code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size
 <body>
 <nav class="nav" aria-label="Main">
   <a class="word" href="/">Teams Personal MCP</a>
-  <a class="link" href="${repo}">Source on GitHub</a>
+  <span><a class="link" href="/changelog">Changelog</a> &nbsp; <a class="link" href="${repo}">Source on GitHub</a></span>
 </nav>
 
 <main>
@@ -144,10 +152,11 @@ code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size
   </div>
   <div class="foot rise" style="--i:3">
     <p class="lead">Use your personal Microsoft Teams (teams.live.com) from Claude, Cursor or VS Code. Your app asks you to sign in with a code at Microsoft. That's it.</p>
-    <div class="alt">
+    ${personalUrls ? `<div class="alt">
+      ${access}
       <button class="textbtn" type="button" id="start">App can't sign in? Get a personal URL</button>
       <p class="status" id="status" role="status"></p>
-    </div>
+    </div>` : ''}
   </div>
 </section>
 
@@ -183,7 +192,7 @@ code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size
   <div class="top"><span>Teams Personal MCP${version ? ' ' + escapeAttr(version) : ''} · open source · not affiliated with Microsoft</span><a href="#title">Back to top</a></div>
   <h2 id="endTitle" class="sr">This server</h2>
   <a class="big" id="hostLine" href="/">this server</a>
-  <div class="meta"><a href="${repo}">Source on GitHub</a><span>Runs on Cloudflare Workers</span></div>
+  <div class="meta"><a href="/changelog">Changelog</a><a href="${repo}">Source on GitHub</a><span>Runs on Cloudflare Workers</span></div>
 </footer>
 
 <noscript><p style="padding:24px var(--margin)">This page needs JavaScript for the personal URL. Connectors work without it: add <b>/mcp</b> on this server to your app.</p></noscript>
@@ -234,10 +243,11 @@ code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size
     var b = document.createElement('span'); b.className = cls; b.textContent = big; f.appendChild(b);
     if (hint) f.appendChild(hint);
   }
-  $('start').addEventListener('click', async function () {
+  if ($('start')) $('start').addEventListener('click', async function () {
     $('start').disabled = true; status('Asking Microsoft for a code…');
     try {
-      var r = await fetch('/api/login/start', { method: 'POST' });
+      var code = $('accessCode') ? $('accessCode').value : '';
+      var r = await fetch('/api/login/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ accessCode: code }) });
       var j = await r.json();
       if (!r.ok) throw new Error(j.error || 'Could not start sign-in.');
       loginId = j.loginId;

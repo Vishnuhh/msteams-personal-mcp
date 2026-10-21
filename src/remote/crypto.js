@@ -35,6 +35,20 @@ export async function sha256B64url(text) {
   return toB64url(new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(text))));
 }
 
+/** HMAC-SHA-256(key, text) as hex: a keyed hash, so values can't be confirmed without the server secret. */
+export async function hmacHex(key, text) {
+  const k = await crypto.subtle.importKey('raw', enc.encode(key), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const sig = new Uint8Array(await crypto.subtle.sign('HMAC', k, enc.encode(text)));
+  return [...sig].map((x) => x.toString(16).padStart(2, '0')).join('');
+}
+
+/** Base64 SHA-256, the form Content-Security-Policy script hashes use. */
+export async function sha256B64(text) {
+  let s = '';
+  for (const b of new Uint8Array(await crypto.subtle.digest('SHA-256', enc.encode(text)))) s += String.fromCharCode(b);
+  return btoa(s);
+}
+
 /** Constant-time string comparison. */
 export function safeEqual(a, b) {
   if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;

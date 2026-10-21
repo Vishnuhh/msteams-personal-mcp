@@ -212,6 +212,12 @@ export async function requestExists(env, reqId) {
   return Boolean(await loadRequest(env, reqId));
 }
 
+/** Public details of a pending request (for the new-connection alert). */
+export async function requestInfo(env, reqId) {
+  const req = await loadRequest(env, reqId);
+  return req ? { clientName: req.clientName || 'An MCP app', redirectHost: new URL(req.redirectUri).host || null } : null;
+}
+
 // ---------------------------------------------------------------- token + revocation
 
 async function formOrJson(request) {
@@ -239,6 +245,7 @@ export async function token(request, env, origin) {
   if (!safeEqual(await sha256B64url(p.code_verifier), data.challenge)) return oauthError('invalid_grant', 'PKCE verification failed.');
   if (p.resource && !resourceOk(p.resource, origin)) return oauthError('invalid_target', `resource must be ${resourceUrl(origin)}.`);
 
+  await env.DB.prepare('UPDATE oauth_clients SET last_used_at = ? WHERE client_id = ?').bind(Date.now(), data.clientId).run();
   return json({ access_token: data.accessKey, token_type: 'Bearer', scope: data.scope || SCOPE });
 }
 

@@ -43,6 +43,11 @@ main { flex: 1; display: flex; flex-direction: column; justify-content: center; 
   text-decoration-thickness: 1px; color: var(--muted); transition: color .18s; }
 .cancel:hover { color: var(--ink); }
 .status { font-size: var(--step-small); color: var(--muted); max-width: 40ch; min-height: 1.5em; margin: 0; }
+.access { display: grid; gap: 6px; justify-items: inherit; }
+.access label { font-size: var(--step-small); color: var(--muted); }
+.access input { font: 500 var(--step-body)/1.2 var(--font); padding: .7em .9em; border: 0; border-radius: var(--radius); background: var(--surface); color: var(--ink); width: min(260px, 100%); }
+.access input:focus { outline: 3px solid var(--accent); outline-offset: 2px; }
+
 .status.err { color: var(--accent); }
 .pulse { animation: pulse 1.6s var(--ease) infinite; }
 @keyframes pulse { 50% { opacity: .55; } }
@@ -79,7 +84,8 @@ const SCRIPT = `
   $('start').addEventListener('click', async function () {
     $('start').disabled = true; status('Asking Microsoft for a code…');
     try {
-      var r = await fetch('/api/login/start', { method: 'POST' });
+      var code = $('accessCode') ? $('accessCode').value : '';
+      var r = await fetch('/api/login/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ accessCode: code }) });
       var j = await r.json();
       if (!r.ok) throw new Error(j.error || 'Could not start sign-in.');
       loginId = j.loginId;
@@ -121,7 +127,7 @@ const SCRIPT = `
   });
 })();`;
 
-export function renderAuthorizePage({ reqId, clientName, redirectHost }) {
+export function renderAuthorizePage({ reqId, clientName, redirectHost, accessCodeRequired = false }) {
   const short = clientName.length > 22 ? clientName.slice(0, 21) + '…' : clientName;
   return shell(`Connect ${clientName} to Teams`, `
 <nav class="nav" aria-label="Main"><a class="word" href="/">Teams Personal MCP</a><span class="note">Sign-in request from ${esc(redirectHost)}</span></nav>
@@ -140,6 +146,7 @@ export function renderAuthorizePage({ reqId, clientName, redirectHost }) {
       You approve with a code on Microsoft's own page; your password never reaches this server.
       Afterwards you return to <b>${esc(redirectHost)}</b>.</p>
     <div class="act">
+      ${accessCodeRequired ? '<div class="access"><label for="accessCode">Team access code</label><input id="accessCode" autocomplete="off" spellcheck="false"></div>' : ''}
       <div class="row"><button class="cancel" type="button" id="cancel">Cancel</button><button class="btn" type="button" id="start">Get sign-in code</button></div>
       <p class="status" id="status" role="status">Personal Microsoft accounts only. Revoke any time with teams_logout.</p>
     </div>

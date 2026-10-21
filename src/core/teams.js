@@ -14,6 +14,9 @@ const MAX_TITLE_LOOKUPS = 20;
 
 // Module-level caches survive across requests in the same process / Worker isolate.
 const contactsCache = new Map(); // selfMri -> { at, names: Map<mri, displayName> }
+const convCache = new Map(); // `${selfMri}|${limit}` -> { at, list } (short TTL; spares Teams on bursts of tool calls)
+const CONV_TTL_MS = 20 * 1000;
+const MAX_EVERYONE = 25; // @everyone is spelled out as individual mentions; keep it to small groups
 const selfNameCache = new Map(); // selfMri -> the user's own display name
 // "<selfMri>|<1:1 conversationId>" -> other member's mri. Keyed per user: on the shared server both
 // people in a 1:1 chat may be users, and each must see the *other* person.
@@ -180,11 +183,28 @@ export function createTeamsClient(getSkypeToken) {
     };
   }
 
-  async function request(url, { method = 'GET', body } = {}) {
-    const res = await fetch(url, { method, headers: await chatHeaders(body), body: body ? JSON.stringify(body) : undefined });
-    const text = await res.text();
-    if (!res.ok) throw new Error(`Teams API ${method} ${new URL(url).pathname} failed (${res.status}): ${text.slice(0, 300)}`);
-    try { return text ? JSON.parse(text) : {}; } catch { return {}; }
+  async function request(url, { method = 'GET', body, withHeaders = false } = {}) {
+    for (let attempt = 0; ; attempt++) {
+      const res = await fetch(url, { method, headers: await chatHeaders(body), body: body ? JSON.stringify(body) : undefined });
+      const text = await res.text();
+      if (res.status === 429 || res.status === 503) {
+        // Microsoft is throttling this account: honour a short Retry-After once, otherwise explain.
+        const wait = Number(res.headers.get('Retry-After')) || 2;
+        if (attempt === 0 && wait <= 5) { await new Promise((r) => setTimeout(r, wait * 1000)); continue; }
+        const err = new Error(`Teams is limiting requests for your account right now. Try again in about ${Math.max(wait, 10)} seconds.`);
+        err.throttled = true;
+        throw err;
+      }
+      if (!res.ok) throw new Error(`Teams API ${method} ${new URL(url).pathname} failed (${res.status}): ${text.slice(0, 300)}`);
+      let data = {};
+      try { data = text ? JSON.parse(text) : {}; } catch { /* empty or non-JSON success */ }
+      return withHeaders ? { data, headers: res.headers } : data;
+    }
+  }
+
+  async function forgetChats() {
+    const self = await me();
+    for (const k of convCache.keys()) if (k.startsWith(`${self}|`)) convCache.delete(k);
   }
 
   async function me() {
@@ -287,10 +307,15 @@ export function createTeamsClient(getSkypeToken) {
   // ------------------------------------------------------------------ chats
 
   async function rawConversations(limit) {
+    const key = `${await me()}|${limit}`;
+    const hit = convCache.get(key);
+    if (hit && Date.now() - hit.at < CONV_TTL_MS) return hit.list;
     const data = await request(
       `${CHATSVC}/conversations?startTime=0&pageSize=${Math.min(limit, 100)}&view=msnp24Equivalent&targetType=${encodeURIComponent(TARGET_TYPES)}`,
     );
-    return (data.conversations || []).slice(0, limit);
+    const list = (data.conversations || []).slice(0, limit);
+    convCache.set(key, { at: Date.now(), list });
+    return list;
   }
 
   async function listChats({ limit = 30, resolveNames = true } = {}) {
@@ -446,12 +471,22 @@ export function createTeamsClient(getSkypeToken) {
 
   // ------------------------------------------------------------------ actions
 
-  async function sendMessage(conversationId, text, { displayName } = {}) {
+  /** "@[A](8:a) @[B](8:b) " for every other member of a small group (Teams personal has no @everyone tag). */
+  async function everyoneMentions(conversationId) {
+    const members = (await getChatMembers(conversationId)).filter((m) => !m.isMe);
+    if (!members.length) throw new Error('Nobody else is in this chat to mention.');
+    if (members.length > MAX_EVERYONE) throw new Error(`This group has ${members.length} other members; mentioning everyone is limited to ${MAX_EVERYONE}. Mention people individually instead.`);
+    return members.map((m) => m.mentionAs).join(' ') + ' ';
+  }
+
+  async function sendMessage(conversationId, text, { displayName, mentionEveryone = false } = {}) {
+    if (mentionEveryone) text = (await everyoneMentions(conversationId)) + text;
     const { html, mentions } = buildContent(text);
     const clientmessageid = randomDigits();
     const body = { clientmessageid, content: html, messagetype: 'RichText/Html', contenttype: 'text', imdisplayname: displayName || await selfName() };
     if (mentions.length) body.properties = { mentions: JSON.stringify(mentions) };
     const res = await request(`${CHATSVC}/conversations/${encodeURIComponent(conversationId)}/messages`, { method: 'POST', body });
+    await forgetChats();
     return {
       sent: true,
       clientmessageid,
@@ -479,6 +514,7 @@ export function createTeamsClient(getSkypeToken) {
       method: 'PUT',
       body: { consumptionhorizon: horizon },
     });
+    await forgetChats();
     return { markedRead: true, conversationId, upToMessageId: target.id, time: target.originalarrivaltime || target.composetime };
   }
 
@@ -604,7 +640,122 @@ export function createTeamsClient(getSkypeToken) {
     return { files: files.slice(0, limit), links: links.slice(0, limit), scannedMessages: msgs.length };
   }
 
+  // ------------------------------------------------------------------ groups
+
+  async function rawThread(conversationId) {
+    return request(`${CHATSVC_ROOT}/threads/${encodeURIComponent(conversationId)}?view=msnp24Equivalent`);
+  }
+
+  function isPinned(m) {
+    const p = parseJsonish(m.properties?.pinned);
+    if (!p) return false;
+    if (typeof p === 'object') return p.isPinned !== false && p.pinned !== false;
+    return p !== 'false' && p !== false;
+  }
+
+  /** Pinned messages found in recent history (Teams personal returns pins on the messages themselves). */
+  async function getPinnedMessages(conversationId, { since = '365d' } = {}) {
+    const [self, names] = await Promise.all([me(), contactNames().catch(() => new Map())]);
+    const msgs = await rawMessages(conversationId, { limit: 500, since: parseTime(since) });
+    return msgs.filter(isPinned).map((m) => formatMessage(m, self, names));
+  }
+
+  /** Topic, members with roles, admins, creation and pinned messages of a group chat. */
+  async function getGroupInfo(conversationId) {
+    const [thread, members, pinned, names, self] = await Promise.all([
+      rawThread(conversationId), getChatMembers(conversationId), getPinnedMessages(conversationId).catch(() => []),
+      contactNames().catch(() => new Map()), me(),
+    ]);
+    const props = thread.properties || {};
+    const created = Number(props.createdat) || null;
+    const creator = props.creator || null;
+    return {
+      id: conversationId,
+      topic: props.topic ? stripHtml(props.topic) : null,
+      type: props.threadType || null,
+      createdAt: created ? new Date(created).toISOString() : null,
+      createdBy: creator ? (creator === self ? 'You' : names.get(creator) || creator) : null,
+      memberCount: members.length,
+      admins: members.filter((m) => /admin/i.test(m.role || '')).map((m) => m.name || m.mri),
+      members: members.map((m) => ({ name: m.name, mri: m.mri, role: m.role, isMe: m.isMe })),
+      pinned: pinned.map((m) => ({ id: m.id, from: m.from, time: m.time, text: m.text.slice(0, 300) })),
+    };
+  }
+
+  /** For one message: who reacted, who replied to it, who wrote since, and who has not responded. */
+  async function getMessageResponses(conversationId, messageId) {
+    const [self, names, original, members] = await Promise.all([
+      me(), contactNames().catch(() => new Map()), rawMessage(conversationId, messageId), getChatMembers(conversationId),
+    ]);
+    const author = mriFromUrl(original.from);
+    const after = (await rawMessages(conversationId, { limit: 500, since: messageTimeMs(original) + 1 }))
+      .map((m) => formatMessage(m, self, names));
+    const nameOf = (mri) => (mri === self ? 'You' : names.get(mri) || members.find((x) => x.mri === mri)?.name || mri);
+    const reacted = new Map();
+    for (const e of parseJsonish(original.properties?.emotions) || []) {
+      for (const u of e.users || []) {
+        const list = reacted.get(u.mri) || [];
+        list.push(describeReaction(e.key));
+        reacted.set(u.mri, list);
+      }
+    }
+    const replied = new Set(after.filter((m) => m.replyTo?.messageId === String(original.id)).map((m) => m.fromId));
+    const wroteSince = new Set(after.map((m) => m.fromId));
+    const everyone = members.map((m) => m.mri).filter((mri) => mri !== author);
+    return {
+      message: {
+        id: String(original.id), from: nameOf(author), time: original.originalarrivaltime || original.composetime,
+        text: stripHtml(parseReply(original.content)?.body ?? original.content).slice(0, 300),
+      },
+      reacted: [...reacted].map(([mri, emojis]) => ({ name: nameOf(mri), reactions: emojis })),
+      repliedToIt: [...replied].map(nameOf),
+      wroteSince: everyone.filter((mri) => wroteSince.has(mri) && !replied.has(mri)).map(nameOf),
+      noResponse: everyone.filter((mri) => !reacted.has(mri) && !replied.has(mri) && !wroteSince.has(mri)).map(nameOf),
+      note: 'noResponse means no reaction, reply or message since; it does not mean they did not read it.',
+    };
+  }
+
+  async function createGroupChat({ members, topic } = {}) {
+    const self = await me();
+    const others = [...new Set((members || []).filter((m) => m && m !== self))];
+    if (!others.length) throw new Error('Add at least one other member (their id, from teams_get_chat_members or a 1:1 chat).');
+    if (others.some((m) => !/^(8|28):/.test(m))) throw new Error('Members must be Teams ids like 8:live:.cid.…');
+    const body = {
+      members: [{ id: self, role: 'Admin' }, ...others.map((id) => ({ id, role: 'User' }))],
+      properties: { threadType: 'chat', chatFilesIndexId: '2', ...(topic ? { topic: String(topic).slice(0, 200) } : {}) },
+    };
+    const { data, headers } = await request(`${CHATSVC_ROOT}/threads`, { method: 'POST', body, withHeaders: true });
+    const id = data?.id || decodeURIComponent((headers.get('Location') || '').split('/threads/').pop() || '') || null;
+    await forgetChats();
+    return { created: Boolean(id), conversationId: id, topic: topic || null, members: others.length + 1 };
+  }
+
+  async function renameGroup(conversationId, topic) {
+    if (!topic || !String(topic).trim()) throw new Error('Give the new group name.');
+    await request(`${CHATSVC_ROOT}/threads/${encodeURIComponent(conversationId)}/properties?name=topic`, {
+      method: 'PUT', body: { topic: String(topic).trim().slice(0, 200) },
+    });
+    await forgetChats();
+    return { renamed: true, conversationId, topic: String(topic).trim() };
+  }
+
+  async function setMember(conversationId, mri, { remove = false } = {}) {
+    if (!/^(8|28):/.test(mri || '')) throw new Error('Member must be a Teams id like 8:live:.cid.… (see teams_get_chat_members).');
+    const url = `${CHATSVC_ROOT}/threads/${encodeURIComponent(conversationId)}/members/${encodeURIComponent(mri)}`;
+    await request(url, remove ? { method: 'DELETE' } : { method: 'PUT', body: { role: 'User' } });
+    await forgetChats();
+    return { [remove ? 'removed' : 'added']: true, conversationId, member: mri };
+  }
+
+  async function leaveGroup(conversationId) {
+    const self = await me();
+    await request(`${CHATSVC_ROOT}/threads/${encodeURIComponent(conversationId)}/members/${encodeURIComponent(self)}`, { method: 'DELETE' });
+    await forgetChats();
+    return { left: true, conversationId };
+  }
+
   return {
+    getGroupInfo, getPinnedMessages, getMessageResponses, createGroupChat, renameGroup, setMember, leaveGroup,
     searchMessages, getSharedFiles,
     whoAmI, listChats, findChats, getChatMembers, getMessages, getMessage, getUnread, getMyRecentMessages, getMentions,
     sendMessage, replyToMessage, editMessage, deleteMessage, react, markRead,

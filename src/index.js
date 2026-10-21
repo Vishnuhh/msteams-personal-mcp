@@ -2,12 +2,14 @@
 // Local MCP server (stdio) for Microsoft Teams personal accounts. Single user, tokens on this machine.
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { readFileSync } from 'node:fs';
 import { z } from 'zod';
 import { startLogin, loginState, logout, hasSavedLogin, getSkypeToken } from './auth.js';
 import { createTeamsClient } from './core/teams.js';
 import { registerTeamsTools, registerTeamsPrompts, wrap } from './core/tools.js';
 
-const server = new McpServer({ name: 'teams-personal', version: '0.6.0' });
+const { version } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+const server = new McpServer({ name: 'teams-personal', version });
 const client = createTeamsClient(getSkypeToken);
 
 server.registerTool('teams_login', {

@@ -26,6 +26,9 @@ function fakeD1() {
           const cols = m[2].split(',').map((c) => c.trim());
           const row = Object.fromEntries(cols.map((c, i) => [c, args[i]]));
           t[m[1]].set(row[key[m[1]]], row);
+        } else if ((m = sql.match(/^UPDATE (\w+) SET (\w+) = \? WHERE (\w+) = \?/))) {
+          const row = t[m[1]].get(args[1]);
+          if (row) row[m[2]] = args[0];
         } else if ((m = sql.match(/^DELETE FROM (\w+) WHERE expires_at < \?/))) {
           for (const [k, r] of t[m[1]]) if (r.expires_at < args[0]) t[m[1]].delete(k);
         } else if ((m = sql.match(/^DELETE FROM (\w+) WHERE (\w+) = \?/))) {
