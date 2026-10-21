@@ -52,3 +52,10 @@ test('admin page renders without data and never inlines secrets', () => {
   assert.doesNotMatch(html, /correct horse|tok_123/);
   assert.match(renderAdminPage({ configured: false }), /not set up yet/);
 });
+
+test('admin page has one view per sidebar item, plus the person view', () => {
+  const html = renderAdminPage({ configured: true });
+  const links = [...html.matchAll(/<li><a href="#(\w+)">/g)].map((m) => m[1]);
+  assert.deepEqual(links, ['overview', 'people', 'tools', 'cloud', 'connections', 'activity', 'settings']);
+  for (const v of [...links, 'person']) assert.match(html, new RegExp(`<section class="view" id="v-${v}"`));
+});
