@@ -5,6 +5,18 @@ What changed in each release. Newest first. The server shows this page at `/chan
 Format: every release has a `## [version] - date` heading, one summary line, and short bullets under
 Added, Changed, Fixed or Security. A release cannot be deployed without its entry (`npm test` checks it).
 
+## [0.9.0] - 2026-10-21
+
+Access for your team and invited people only.
+
+### Security
+- Only approved accounts can connect: members of the team's Teams groups, people with an invite link, and people the server owner approves.
+- A sign-in that isn't allowed is refused before anything is stored; the request waits for approval, and signing in again works once approved.
+- Group membership is checked with your own sign-in when you connect and once a day after; leaving the group ends your access.
+
+### Added
+- Invite links: open the link, sign in once, then add the server to your app as usual.
+
 ## [0.8.0] - 2026-10-21
 
 Usage counted per person.

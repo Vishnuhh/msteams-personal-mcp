@@ -100,7 +100,7 @@ async function loadBasics(env, { inactiveDays, days = 30, now = Date.now() }) {
   return { connections, rows, people, overrides };
 }
 
-export async function overview(env, { version, settings, inactiveDays, dailyCap = 200 }) {
+export async function overview(env, { version, settings, inactiveDays, dailyCap = 200, access = { restricted: false, waiting: 0 } }) {
   const now = Date.now();
   const { connections, rows, people, overrides } = await loadBasics(env, { inactiveDays, now });
   const insights = buildInsights({ rows, connections, people, now, dailyCap, overrides });
@@ -112,8 +112,12 @@ export async function overview(env, { version, settings, inactiveDays, dailyCap 
   const cloud = await cloudUsage(env, now).catch((e) => ({ configured: true, error: String(e.message || e).slice(0, 200) }));
   const lastCleanup = await env.DB.prepare("SELECT day FROM stats WHERE metric = 'cleanup_run' ORDER BY day DESC LIMIT 1").first();
   const todayTotals = insights.daily[insights.daily.length - 1];
+  const alerts = buildAlerts({ insights, cloud: cloud?.configured && !cloud.error ? cloud : null, failedAdminSignInsToday: failedAdminToday });
+  if (access.waiting) alerts.unshift({ level: 'warn', text: `${access.waiting} ${access.waiting === 1 ? 'person is' : 'people are'} waiting for an access decision. See Access.` });
+  if (!access.restricted) alerts.push({ level: 'warn', text: 'Access is open: any personal Microsoft account can connect. Restrict it under Access.' });
   return {
     version,
+    access: { restricted: access.restricted, waiting: access.waiting },
     totals: {
       people: insights.people.length,
       activeToday: insights.adoption.activeToday,
@@ -124,7 +128,7 @@ export async function overview(env, { version, settings, inactiveDays, dailyCap 
       connections: connections.length,
       registeredApps: (await env.DB.prepare('SELECT COUNT(*) AS n FROM oauth_clients').first())?.n ?? 0,
     },
-    alerts: buildAlerts({ insights, cloud: cloud?.configured && !cloud.error ? cloud : null, failedAdminSignInsToday: failedAdminToday }),
+    alerts,
     cloud,
     people: insights.people,
     daily: insights.daily,

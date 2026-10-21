@@ -17,7 +17,8 @@
 //
 // Optional settings (wrangler vars or secrets):
 //   ACCESS_CODE            team access code required to sign in (secret)
-//   ALLOWED_ACCOUNTS       comma-separated Teams ids (8:live:.cid.…) allowed to sign in
+//   ALLOWED_ACCOUNTS       comma-separated Teams ids (8:live:.cid.…) always let in. Who else may connect (Teams
+//                          groups, invite links, approvals) is managed in the admin area: see remote/access.js
 //   DISABLE_PERSONAL_URLS  "true" = connectors only; /mcp/<key> URLs and new personal URLs are refused
 //   NEW_CONNECTION_ALERTS  "false" = don't post a note to the user's Teams Notes on each new connection
 //   ADMIN_USERNAME, ADMIN_PASSWORD   admin sign-in for /admin (secrets; password at least 12 characters)
@@ -39,6 +40,10 @@ import {
   person as adminPerson, personCsvResponse, endPerson, setPersonLimit,
 } from './remote/admin.js';
 import { usageRecorder } from './remote/usage.js';
+import {
+  accessMode, setMode, inviteValid, decideSignIn, connectionAccess, recheckMember, accessSummary, accessOverview,
+  addGroup, removeGroup, createInvite, revokeInvite, personAccess, cleanupStatements,
+} from './remote/access.js';
 import CHANGELOG from '../CHANGELOG.md';
 import pkg from '../package.json';
 import {
@@ -60,6 +65,7 @@ const json = (data, status = 200, headers = {}) =>
 
 const salt = (env) => env.KEY_SALT || 'msteams-personal-mcp';
 const today = () => new Date().toISOString().slice(0, 10);
+const modeOf = (env) => accessMode(env, { defaultRestricted: adminConfigured(env) });
 const flag = (v) => String(v || '').toLowerCase() === 'true';
 const settings = (env) => ({
   accessCodeRequired: Boolean(env.ACCESS_CODE),
@@ -109,12 +115,14 @@ async function loginStart(request, env, ctx) {
     stat(env, ctx, 'signin_bad_access_code');
     return json({ error: body.accessCode ? 'That access code is not right.' : 'Enter the team access code.', needAccessCode: true }, 403);
   }
+  const invite = typeof body.invite === 'string' && body.invite ? body.invite : null;
+  if (invite && !(await inviteValid(env, invite))) return json({ error: 'This invite link has expired or was used up. Ask for a new one.' }, 410);
   const now = Date.now();
   await env.DB.prepare('DELETE FROM logins WHERE expires_at < ?').bind(now).run();
   const dc = await requestDeviceCode();
   const loginId = newSecret('login');
   await env.DB.prepare('INSERT INTO logins (id, data, interval_s, next_poll_at, expires_at) VALUES (?, ?, ?, ?, ?)')
-    .bind(await sha256Hex(loginId), await sealJson(loginId, salt(env), LOGIN_INFO, { deviceCode: dc.deviceCode }),
+    .bind(await sha256Hex(loginId), await sealJson(loginId, salt(env), LOGIN_INFO, { deviceCode: dc.deviceCode, invite }),
       dc.interval, now + dc.interval * 1000, dc.expiresAt)
     .run();
   return json({ loginId, userCode: dc.userCode, verificationUrl: dc.verificationUrl, interval: dc.interval, expiresAt: dc.expiresAt });
@@ -135,9 +143,6 @@ async function loginPoll(request, env, ctx) {
   const cfg = settings(env);
   const { loginId, req } = await request.json().catch(() => ({}));
   if (typeof loginId !== 'string' || !loginId.startsWith('login_')) return json({ status: 'error', error: 'Missing loginId.' }, 400);
-  if (req === undefined && !cfg.personalUrls) {
-    return json({ status: 'error', error: 'Personal URLs are turned off on this server. Add the /mcp address to your app as a connector instead.' }, 403);
-  }
   if (req !== undefined && !(await requestExists(env, req))) {
     return json({ status: 'error', error: 'This sign-in request expired. Start again from your app.' }, 410);
   }
@@ -149,7 +154,10 @@ async function loginPoll(request, env, ctx) {
   // Respect Microsoft's polling interval no matter how often the browser asks.
   if (now < row.next_poll_at) return json({ status: 'pending', interval: row.interval_s });
 
-  const { deviceCode } = await openJson(loginId, salt(env), LOGIN_INFO, row.data);
+  const { deviceCode, invite } = await openJson(loginId, salt(env), LOGIN_INFO, row.data);
+  if (req === undefined && !invite && !cfg.personalUrls) {
+    return json({ status: 'error', error: 'Personal URLs are turned off on this server. Add the /mcp address to your app as a connector instead.' }, 403);
+  }
   let result;
   try {
     result = await pollDeviceCode(deviceCode);
@@ -166,10 +174,31 @@ async function loginPoll(request, env, ctx) {
   // Approved: verify the whole chain works, and that this account may use this server.
   const skype = await exchangeForSkypeToken(result.refreshToken);
   const mri = selfMri(skype.token);
-  if (cfg.allowList.length && !cfg.allowList.some((a) => a === mri || `8:${a}` === mri)) {
+  const hash = mri ? await accountHash(env, mri) : null;
+  const mode = await modeOf(env);
+  let name;
+  if (mode.restricted) {
+    // Decide before storing anything: a refused sign-in is dropped here and the person waits for the admin.
+    const teams = createTeamsClient(async () => skype);
+    name = await teams.displayName().catch(() => null);
+    const d = hash
+      ? await decideSignIn(env, { hash, mri, name, invite, client: teams, allowList: cfg.allowList, now })
+      : { ok: false, error: 'Could not read your Teams account. Try again.' };
+    if (!d.ok) {
+      await env.DB.prepare('DELETE FROM logins WHERE id = ?').bind(id).run();
+      stat(env, ctx, 'signin_not_allowed');
+      return json({ status: 'error', error: d.error }, 403);
+    }
+  } else if (cfg.allowList.length && !cfg.allowList.some((a) => a === mri || `8:${a}` === mri)) {
     await env.DB.prepare('DELETE FROM logins WHERE id = ?').bind(id).run();
     stat(env, ctx, 'signin_not_allowed');
     return json({ status: 'error', error: `This server is limited to its team. Ask the admin to add your account: ${mri}` }, 403);
+  }
+  if (invite && req === undefined) {
+    // Invite link on the home page: this sign-in only grants access; the person then adds /mcp to their app.
+    await env.DB.prepare('DELETE FROM logins WHERE id = ?').bind(id).run();
+    stat(env, ctx, 'invite_accepted');
+    return json({ status: 'approved', accessGranted: true, mcpUrl: `${new URL(request.url).origin}/mcp` });
   }
 
   const accessKey = newSecret('tpm');
@@ -180,15 +209,14 @@ async function loginPoll(request, env, ctx) {
   });
   await env.DB.batch([
     env.DB.prepare('INSERT INTO users (id, data, created_at, updated_at, last_used_at, account_hash, app_name) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .bind(userId, data, now, now, now, mri ? await accountHash(env, mri) : null, req !== undefined ? ((await requestInfo(env, req))?.clientName || 'MCP app') : 'Personal URL'),
+      .bind(userId, data, now, now, now, hash, req !== undefined ? ((await requestInfo(env, req))?.clientName || 'MCP app') : 'Personal URL'),
     env.DB.prepare('DELETE FROM logins WHERE id = ?').bind(id),
   ]);
   stat(env, ctx, 'signin');
 
   const origin = new URL(request.url).origin;
   ctx.waitUntil((async () => {
-    const name = await createTeamsClient(async () => skype).displayName().catch(() => null);
-    const hash = mri ? await accountHash(env, mri) : null;
+    if (name === undefined) name = await createTeamsClient(async () => skype).displayName().catch(() => null);
     if (name) await env.DB.prepare('UPDATE users SET account_name = ? WHERE id = ?').bind(name, userId).run();
     if (hash) await rememberPerson(env, hash, name, now);
   })().catch(() => {}));
@@ -270,7 +298,10 @@ async function handleMcp(request, env, url, ctx) {
   const accessKey = found.key;
   if (!/^tpm_[A-Za-z0-9_-]{20,}$/.test(accessKey)) return unauthorized(url, 'Invalid access token. Sign in again.', 'invalid_token');
   const userId = await sha256Hex(accessKey);
-  const row = await env.DB.prepare('SELECT created_at, last_used_at, account_hash, account_name FROM users WHERE id = ?').bind(userId).first();
+  const row = await env.DB.prepare(
+    'SELECT u.created_at, u.last_used_at, u.account_hash, u.account_name, a.status AS access_status, a.checked_day AS access_checked ' +
+    'FROM users u LEFT JOIN access_people a ON a.account_hash = u.account_hash WHERE u.id = ?',
+  ).bind(userId).first();
   if (!row) return unauthorized(url, `This connection was revoked or has expired. Sign in again${found.via === 'path' ? ` at ${signInUrl}` : ''}.`, 'invalid_token');
 
   const now = Date.now();
@@ -281,6 +312,13 @@ async function handleMcp(request, env, url, ctx) {
     stat(env, ctx, 'expired');
     return unauthorized(url, `This connection expired after ${INACTIVE_DAYS} days without use. Sign in again.`, 'invalid_token');
   }
+  const access = await connectionAccess(env, await modeOf(env), row, now);
+  if (access === 'denied') {
+    await env.DB.prepare('DELETE FROM users WHERE id = ?').bind(userId).run();
+    skypeCache.delete(userId);
+    stat(env, ctx, 'access_denied');
+    return unauthorized(url, "This account doesn't have access to this server any more. Ask its admin.", 'invalid_token');
+  }
   if (!(await limit(env, 'USER_LIMITER', userId))) {
     stat(env, ctx, 'rate_limited_user');
     return json({ jsonrpc: '2.0', error: { code: -32000, message: 'Too many requests from this connection. Slow down and retry in a minute.' }, id: null }, 429, { 'Retry-After': '60', ...CORS_HEADERS });
@@ -290,6 +328,8 @@ async function handleMcp(request, env, url, ctx) {
   // Per-person usage counts for this request (numbers only), written in one batch when the response is ready.
   const usage = usageRecorder({ userId, accountHash: row.account_hash, now });
   const client = createTeamsClient(getSkypeToken, { onTeamsCall: () => usage.add('teams_call'), onThrottled: () => usage.add('throttled') });
+  // Group members are re-checked once a day, in the background; leaving every access group ends their connections.
+  if (access === 'recheck') ctx.waitUntil(recheckMember(env, client, row.account_hash, now).catch(() => {}));
   // Date-level last use, written at most once a day; backfill the account hash and name for older connections.
   if (new Date(lastUsed).toISOString().slice(0, 10) !== today() || !row.account_hash || !row.account_name) {
     ctx.waitUntil((async () => {
@@ -370,6 +410,7 @@ async function cleanup(env) {
     env.DB.prepare('DELETE FROM usage WHERE day < ?').bind(new Date(now - 3 * DAY_MS).toISOString().slice(0, 10)),
     env.DB.prepare('DELETE FROM stats WHERE day < ?').bind(new Date(now - 90 * DAY_MS).toISOString().slice(0, 10)),
     env.DB.prepare('DELETE FROM usage_daily WHERE day < ?').bind(new Date(now - 90 * DAY_MS).toISOString().slice(0, 10)),
+    ...cleanupStatements(env, now),
   ]);
   const expired = results[0]?.meta?.changes || 0;
   await env.DB.prepare("INSERT INTO stats (day, metric, count) VALUES (?, 'cleanup_run', 1) ON CONFLICT(day, metric) DO UPDATE SET count = count + 1").bind(today()).run();
@@ -413,7 +454,7 @@ export default {
       if (limited) return limited;
 
       if (path === '/' && method === 'GET') {
-        return html(renderPage({ repoUrl: env.REPO_URL, version: 'v' + VERSION, accessCodeRequired: cfg.accessCodeRequired, personalUrls: cfg.personalUrls }));
+        return html(renderPage({ repoUrl: env.REPO_URL, version: 'v' + VERSION, accessCodeRequired: cfg.accessCodeRequired, personalUrls: cfg.personalUrls, restricted: (await modeOf(env)).restricted }));
       }
       if ((path === '/changelog' || path === '/changelog/') && method === 'GET') {
         return html(renderChangelogPage({ markdown: CHANGELOG, liveVersion: VERSION, repoUrl: env.REPO_URL }));
@@ -457,9 +498,22 @@ export default {
         if (path === '/admin/logout' && method === 'POST') return adminLogout();
         if (!(await isAdmin(request, env))) return json({ error: 'Sign in at /admin.' }, 401);
         const s = settings(env);
-        const settingsView = { accessCodeRequired: s.accessCodeRequired, allowListSize: s.allowList.length, personalUrls: s.personalUrls, alerts: s.alerts };
+        const mode = await modeOf(env);
+        const settingsView = { accessCodeRequired: s.accessCodeRequired, allowListSize: s.allowList.length, personalUrls: s.personalUrls, alerts: s.alerts, restricted: mode.restricted };
         if ((path === '/admin/api/overview' || path === '/admin/stats') && method === 'GET') {
-          return json(await adminOverview(env, { version: VERSION, settings: settingsView, inactiveDays: INACTIVE_DAYS }));
+          return json(await adminOverview(env, { version: VERSION, settings: settingsView, inactiveDays: INACTIVE_DAYS, access: { ...mode, ...(await accessSummary(env, mode)) } }));
+        }
+        if (path === '/admin/api/access' && method === 'GET') return await accessOverview(env, mode);
+        if (path === '/admin/api/access/mode' && method === 'POST') return await setMode(request, env, mode);
+        if (path === '/admin/api/access/groups' && method === 'POST') return await addGroup(request, env);
+        if (path === '/admin/api/access/groups/remove' && method === 'POST') return await removeGroup(request, env);
+        if (path === '/admin/api/access/invites' && method === 'POST') return await createInvite(request, env, url.origin);
+        const inv = path.match(/^\/admin\/api\/access\/invites\/([0-9a-f]{64})\/revoke$/);
+        if (inv && method === 'POST') return await revokeInvite(env, inv[1]);
+        const acc = path.match(/^\/admin\/api\/access\/people\/([0-9a-f]{64})\/(approve|block|remove|unblock)$/);
+        if (acc && method === 'POST') {
+          if (acc[2] === 'block' || acc[2] === 'remove') skypeCache.clear();
+          return await personAccess(env, acc[1], acc[2]);
         }
         const end = path.match(/^\/admin\/api\/connections\/([0-9a-f]{64})\/end$/);
         if (end && method === 'POST') {
@@ -496,7 +550,11 @@ export default {
     if (env.ALERT_WEBHOOK_URL) {
       ctx.waitUntil((async () => {
         const s = settings(env);
-        const o = await adminOverview(env, { version: VERSION, settings: { accessCodeRequired: s.accessCodeRequired, allowListSize: s.allowList.length, personalUrls: s.personalUrls, alerts: s.alerts }, inactiveDays: INACTIVE_DAYS });
+        const mode = await modeOf(env);
+        const o = await adminOverview(env, {
+          version: VERSION, inactiveDays: INACTIVE_DAYS, access: { ...mode, ...(await accessSummary(env, mode)) },
+          settings: { accessCodeRequired: s.accessCodeRequired, allowListSize: s.allowList.length, personalUrls: s.personalUrls, alerts: s.alerts, restricted: mode.restricted },
+        });
         if (!o.alerts.length) return;
         const text = `Teams Personal MCP: ${o.alerts.length} alert(s)\n` + o.alerts.map((a) => `- ${a.text}`).join('\n');
         await fetch(env.ALERT_WEBHOOK_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, content: text }) });

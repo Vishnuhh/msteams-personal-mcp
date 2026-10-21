@@ -92,6 +92,20 @@ td .end { font: 500 var(--step-small)/1 var(--font); background: none; border: 0
 .rank li i { display: block; height: 8px; background: var(--ink); border-radius: 2px; }
 .rank li .n { text-align: right; font-variant-numeric: tabular-nums; }
 .cap { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+td .go { font: 600 var(--step-small)/1 var(--font); background: none; border: 0; color: var(--ink); cursor: pointer; padding: 0; text-decoration: underline; text-underline-offset: .2em; }
+td .acts { display: flex; gap: 14px; justify-content: flex-end; white-space: nowrap; }
+.menu .count.hot { background: var(--accent); color: #fff; opacity: 1; border-radius: 9px; padding: 1px 7px; }
+.seg { display: inline-flex; background: var(--surface); border-radius: var(--radius); padding: 3px; gap: 3px; }
+.seg button { font: 500 var(--step-small)/1 var(--font); border: 0; background: none; color: var(--muted); padding: 8px 14px; border-radius: 3px; cursor: pointer; }
+.seg button[aria-pressed="true"] { background: var(--ink); color: #fff; }
+.inline { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 12px; }
+.inline input { font: 500 var(--step-small)/1.2 var(--font); padding: .7em .9em; border: 0; border-radius: var(--radius); background: var(--surface); color: var(--ink); min-width: 0; }
+.inline input[type="number"] { width: 5.5em; }
+.inline label { display: flex; align-items: center; gap: 6px; }
+.inline .grow { flex: 1 1 260px; }
+.newlink { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; background: var(--surface); border-radius: var(--radius); padding: 12px 14px; margin-top: 12px; }
+.newlink code { overflow-wrap: anywhere; flex: 1 1 280px; }
+.sub2 { margin: -6px 0 10px; }
 .cap input { width: 7em; }
 .actions { display: flex; gap: 10px; flex-wrap: wrap; }
 .scroll { overflow-x: auto; }
@@ -148,8 +162,8 @@ const SCRIPT = `
   }
 
   // ------------------------------------------------------------ views
-  var VIEWS = ['overview', 'people', 'person', 'tools', 'cloud', 'connections', 'activity', 'settings'];
-  var TITLES = { overview: 'Overview', people: 'People', person: 'Person', tools: 'Tools', cloud: 'Cloud', connections: 'Connections', activity: 'Activity', settings: 'Settings' };
+  var VIEWS = ['overview', 'people', 'person', 'access', 'tools', 'cloud', 'connections', 'activity', 'settings'];
+  var TITLES = { overview: 'Overview', people: 'People', person: 'Person', access: 'Access', tools: 'Tools', cloud: 'Cloud', connections: 'Connections', activity: 'Activity', settings: 'Settings' };
 
   function renderOverview(d) {
     var al = clear($('alerts')); d.alerts.forEach(function (a) { al.appendChild(el('div', 'alert' + (a.level === 'bad' ? ' bad' : ''), a.text)); });
@@ -239,7 +253,7 @@ const SCRIPT = `
 
   function renderSettings(d) {
     var s = d.settings, l = d.limits, m = d.microsoft;
-    facts($('settings'), [['Version', 'v' + d.version], ['Access code required', s.accessCodeRequired ? 'Yes' : 'No'], ['Allow-list', s.allowListSize ? s.allowListSize + ' accounts' : 'Off'],
+    facts($('settings'), [['Version', 'v' + d.version], ['Access', s.restricted ? 'Restricted (see Access)' : 'Open to any personal account'], ['Access code required', s.accessCodeRequired ? 'Yes' : 'No'], ['Allow-list', s.allowListSize ? s.allowListSize + ' accounts' : 'Off'],
       ['Personal URLs', s.personalUrls ? 'On' : 'Off (connectors only)'], ['New-connection notes', s.alerts ? 'On' : 'Off'], ['Last nightly cleanup', d.lastCleanup || 'Not yet']]);
     facts($('limits'), [['Requests', l.requestsPerMinute + ' a minute per person'], ['Searches across chats', l.searchesPerMinute + ' a minute per person'],
       ['Changes', l.changesPerMinute + ' a minute and ' + l.changesPerDay + ' a day per person'], ['Connections end after', l.inactiveDays + ' days unused']]);
@@ -277,9 +291,104 @@ const SCRIPT = `
     };
   }
 
-  var RENDER = { overview: renderOverview, people: renderPeople, tools: renderTools, cloud: renderCloud, connections: renderConnections, activity: renderActivity, settings: renderSettings };
+  // ------------------------------------------------------------ access
+  async function post(path, body) {
+    var r = await api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+    var j = await r.json().catch(function () { return {}; });
+    if (!r.ok) throw new Error(j.error || 'That did not work.');
+    return j;
+  }
+  function act(label, cls, fn) { var b = el('button', cls, label); b.type = 'button'; b.addEventListener('click', fn); return b; }
+  function acts(tr, buttons) { var td = el('td'); var w = el('div', 'acts'); buttons.forEach(function (b) { w.appendChild(b); }); td.appendChild(w); tr.appendChild(td); }
+  function personCell(tr, p, link) { var td = el('td'); td.appendChild(link ? personLink(p) : el('span', '', p.name || 'Unknown person')); tr.appendChild(td); }
+  function how(p, groups) {
+    var v = p.via || '';
+    if (v.indexOf('group:') === 0) return 'Group: ' + (groups[v.slice(6)] || 'a Teams group');
+    if (v.indexOf('invite:') === 0) return 'Invite' + (v.length > 7 ? ': ' + v.slice(7) : '');
+    return { admin: 'Approved by you', 'allow-list': 'Allow-list', 'connected before': 'Connected before access was restricted', 'left group': 'Left their group' }[v] || '—';
+  }
+  function decide(p, action, question) {
+    return async function () {
+      if (question && !confirm(question)) return;
+      try { await post('/admin/api/access/people/' + p.key + '/' + action); } catch (e) { alert(e.message); }
+      load(true);
+    };
+  }
+  async function renderAccess() {
+    var r = await api('/admin/api/access'); if (r.status === 401) return showSignin();
+    var a = await r.json(), groups = a.groupNames || {};
+    $('modeRestricted').setAttribute('aria-pressed', String(a.restricted)); $('modeOpen').setAttribute('aria-pressed', String(!a.restricted));
+    text($('modeNote'), a.restricted
+      ? 'Restricted' + (a.restrictedSince ? ' since ' + day(a.restrictedSince) : '') + ': only members of the groups below, invited and approved people can connect. Everyone else is refused, nothing of theirs is stored, and they wait here.'
+      : 'Open: any personal Microsoft account can connect to this server.');
 
-  function route() {
+    var waiting = a.people.filter(function (p) { return p.status === 'pending' || p.status === 'review'; });
+    text($('waitingCount'), waiting.length ? '(' + waiting.length + ')' : '');
+    var tb = clear($('aWaiting'));
+    if (!waiting.length) empty(tb, 5, 'Nobody is waiting.');
+    waiting.forEach(function (p) {
+      var tr = el('tr'); personCell(tr, p, p.status === 'review');
+      tr.appendChild(el('td', '', p.status === 'review' ? 'Already connected (still works)' : p.via === 'left group' ? 'Left their group' : 'Asked to join'));
+      tr.appendChild(el('td', '', when(p.requestedAt || p.updatedAt)));
+      tr.appendChild(el('td', 'num', p.status === 'pending' ? p.attempts : '—'));
+      acts(tr, [act('Approve', 'go', decide(p, 'approve')),
+        p.status === 'review' ? act('Remove', 'end', decide(p, 'remove', 'Remove ' + (p.name || 'this person') + ' and end their connections?'))
+          : act('Block', 'end', decide(p, 'block', 'Block ' + (p.name || 'this person') + '? They will not be able to ask again.'))]);
+      tb.appendChild(tr);
+    });
+
+    tb = clear($('aGroups'));
+    if (!a.groups.length) empty(tb, 4, 'No groups yet. Add one below.');
+    a.groups.forEach(function (g) {
+      var tr = el('tr'); tr.appendChild(el('td', '', g.name || 'Name shows after the first check'));
+      var idc = el('td'); idc.appendChild(el('code', '', g.id.length > 22 ? g.id.slice(0, 22) + '…' : g.id)); idc.title = g.id; tr.appendChild(idc);
+      tr.appendChild(el('td', 'num', g.members));
+      acts(tr, [act('Remove', 'end', async function () {
+        if (!confirm('Remove this group? Its members lose access at their next daily check, unless another group or an approval lets them in.')) return;
+        try { await post('/admin/api/access/groups/remove', { conversationId: g.id }); } catch (e) { alert(e.message); }
+        load(true);
+      })]);
+      tb.appendChild(tr);
+    });
+
+    tb = clear($('aInvites'));
+    if (!a.invites.length) empty(tb, 5, 'No invite links yet.');
+    a.invites.forEach(function (i) {
+      var tr = el('tr'); tr.appendChild(el('td', '', i.label || '—'));
+      tr.appendChild(el('td', 'num', i.usesLeft)); tr.appendChild(el('td', 'num', i.used));
+      tr.appendChild(el('td', '', i.active ? day(i.expiresAt) : 'Ended'));
+      acts(tr, i.active ? [act('Revoke', 'end', async function () {
+        if (!confirm('Revoke this invite link? People who already joined keep access.')) return;
+        try { await post('/admin/api/access/invites/' + i.id + '/revoke'); } catch (e) { alert(e.message); }
+        load(true);
+      })] : []);
+      tb.appendChild(tr);
+    });
+
+    var allowed = a.people.filter(function (p) { return p.status === 'member' || p.status === 'approved'; });
+    tb = clear($('aAllowed'));
+    if (!allowed.length) empty(tb, 4, 'Nobody yet.');
+    allowed.forEach(function (p) {
+      var tr = el('tr'); personCell(tr, p, true);
+      tr.appendChild(el('td', '', how(p, groups))); tr.appendChild(el('td', '', day(p.updatedAt)));
+      acts(tr, [act('Remove', 'end', decide(p, 'remove', 'Remove ' + (p.name || 'this person') + '? Their connections end now; they can ask again or get in through a group.')),
+        act('Block', 'end', decide(p, 'block', 'Block ' + (p.name || 'this person') + '? Their connections end now and they cannot get back in.'))]);
+      tb.appendChild(tr);
+    });
+
+    var blocked = a.people.filter(function (p) { return p.status === 'blocked'; });
+    tb = clear($('aBlocked'));
+    if (!blocked.length) empty(tb, 3, 'Nobody is blocked.');
+    blocked.forEach(function (p) {
+      var tr = el('tr'); personCell(tr, p, false); tr.appendChild(el('td', '', day(p.updatedAt)));
+      acts(tr, [act('Unblock', 'go', decide(p, 'unblock'))]);
+      tb.appendChild(tr);
+    });
+  }
+
+  var RENDER = { access: renderAccess, overview: renderOverview, people: renderPeople, tools: renderTools, cloud: renderCloud, connections: renderConnections, activity: renderActivity, settings: renderSettings };
+
+  function route(keepScroll) {
     var h = decodeURIComponent((location.hash || '#overview').slice(1));
     var parts = h.split('/'); var view = VIEWS.indexOf(parts[0]) >= 0 ? parts[0] : 'overview';
     VIEWS.forEach(function (v) { $('v-' + v).hidden = v !== view; });
@@ -288,13 +397,14 @@ const SCRIPT = `
       if (on) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
     });
     document.title = TITLES[view] + ' · Admin';
-    window.scrollTo(0, 0);
+    if (!keepScroll) window.scrollTo(0, 0);
     if (view === 'person') return renderPerson(parts.slice(1).join('/'));
     if (data) RENDER[view](data);
   }
 
   function updateMenu(d) {
     text($('c-people'), d.people.length); text($('c-connections'), d.connections.length);
+    var w = (d.access && d.access.waiting) || 0, ca = $('c-access'); ca.textContent = w ? String(w) : ''; ca.className = 'count' + (w ? ' hot' : '');
     $('alertDot').hidden = !d.alerts.length; text($('ver'), 'v' + d.version);
   }
 
@@ -309,7 +419,7 @@ const SCRIPT = `
       if (r.status === 401) { showSignin(); return; }
       data = await r.json();
       $('signinForm').hidden = true; $('app').hidden = false;
-      updateMenu(data); route();
+      updateMenu(data); route(force);
     })();
     try { await loading; } finally { loading = null; }
   }
@@ -324,6 +434,28 @@ const SCRIPT = `
   });
   $('out').addEventListener('click', async function () { await api('/admin/logout', { method: 'POST' }); data = null; showSignin(); });
   $('refresh').addEventListener('click', function () { load(true); });
+  async function setMode(mode) {
+    if (mode === 'open' && !confirm('Open access? Any personal Microsoft account will be able to connect.')) return;
+    try { await post('/admin/api/access/mode', { mode: mode }); } catch (e) { alert(e.message); }
+    load(true);
+  }
+  $('modeRestricted').addEventListener('click', function () { setMode('restricted'); });
+  $('modeOpen').addEventListener('click', function () { setMode('open'); });
+  $('groupForm').addEventListener('submit', async function (e) {
+    e.preventDefault(); $('gMsg').textContent = '';
+    try { await post('/admin/api/access/groups', { conversationId: $('gId').value.trim(), name: $('gName').value.trim() }); $('gId').value = ''; $('gName').value = ''; load(true); }
+    catch (err) { $('gMsg').textContent = err.message; }
+  });
+  $('inviteForm').addEventListener('submit', async function (e) {
+    e.preventDefault(); $('iMsg').textContent = '';
+    try {
+      var j = await post('/admin/api/access/invites', { label: $('iLabel').value.trim(), uses: Number($('iUses').value), days: Number($('iDays').value) });
+      $('newLinkText').textContent = j.link; $('newLink').hidden = false; $('iLabel').value = ''; load(true);
+    } catch (err) { $('iMsg').textContent = err.message; }
+  });
+  $('copyLink').addEventListener('click', function () {
+    navigator.clipboard.writeText($('newLinkText').textContent).then(function () { $('copyLink').textContent = 'Copied'; setTimeout(function () { $('copyLink').textContent = 'Copy link'; }, 1500); });
+  });
   load();
 })();`;
 
@@ -354,6 +486,7 @@ ${configured ? '' : `<div class="notset"><h1>Admin</h1><p>Admin sign-in is not s
     <nav><ul class="menu">
       <li><a href="#overview">Overview <span class="dot" id="alertDot" hidden title="Alerts"></span></a></li>
       <li><a href="#people">People <span class="count" id="c-people"></span></a></li>
+      <li><a href="#access">Access <span class="count" id="c-access"></span></a></li>
       <li><a href="#tools">Tools</a></li>
       <li><a href="#cloud">Cloud</a></li>
       <li><a href="#connections">Connections <span class="count" id="c-connections"></span></a></li>
@@ -409,6 +542,29 @@ ${configured ? '' : `<div class="notset"><h1>Admin</h1><p>Admin sign-in is not s
         <div><h2>Their tools</h2><div class="scroll"><table><thead><tr><th>Tool</th><th class="num">Calls</th><th class="num">Avg time</th><th class="num">Avg size</th><th class="num">Errors</th></tr></thead><tbody id="pToolTable"></tbody></table></div></div>
         <div><h2>Health</h2><dl class="facts" id="pHealth"></dl></div>
       </div>
+    </section>
+
+    <section class="view" id="v-access" hidden aria-labelledby="h-access">
+      <div class="head"><h1 id="h-access">Access</h1>
+        <div class="seg" role="group" aria-label="Who can connect"><button type="button" id="modeRestricted" aria-pressed="false">Restricted</button><button type="button" id="modeOpen" aria-pressed="false">Open</button></div></div>
+      <p class="muted" id="modeNote" style="max-width:80ch;margin-top:-20px"></p>
+      <div><h2>Waiting <span class="muted" id="waitingCount"></span></h2>
+        <div class="scroll"><table><thead><tr><th>Person</th><th>Why</th><th>When</th><th class="num">Tries</th><th></th></tr></thead><tbody id="aWaiting"></tbody></table></div></div>
+      <div><h2>Teams groups</h2>
+        <p class="muted sub2">Members of these group chats get in automatically and are re-checked daily; leaving the group ends their access. To find a group's id, ask Claude: “What is the chat id of the … group?”</p>
+        <div class="scroll"><table><thead><tr><th>Group</th><th>Chat id</th><th class="num">People in</th><th></th></tr></thead><tbody id="aGroups"></tbody></table></div>
+        <form class="inline" id="groupForm"><input class="grow" id="gId" placeholder="19:…@thread.v2" aria-label="Group chat id" required spellcheck="false" autocomplete="off"><input id="gName" placeholder="Name (optional)" aria-label="Group name"><button class="btn quiet" type="submit">Add group</button></form>
+        <p class="err" id="gMsg" role="alert"></p></div>
+      <div><h2>Invite links</h2>
+        <p class="muted sub2">For people outside your groups, such as customers. Whoever signs in through the link has access until you remove them.</p>
+        <form class="inline" id="inviteForm"><input class="grow" id="iLabel" placeholder="Label, e.g. Acme team" aria-label="Invite label"><label class="muted">Uses <input id="iUses" type="number" min="1" max="500" value="1"></label><label class="muted">Days <input id="iDays" type="number" min="1" max="30" value="7"></label><button class="btn quiet" type="submit">Create link</button></form>
+        <p class="err" id="iMsg" role="alert"></p>
+        <div class="newlink" id="newLink" hidden><code id="newLinkText"></code><button class="btn" type="button" id="copyLink">Copy link</button><span class="muted">Shown once. Send it to the people you invite.</span></div>
+        <div class="scroll" style="margin-top:12px"><table><thead><tr><th>Label</th><th class="num">Uses left</th><th class="num">Used</th><th>Ends</th><th></th></tr></thead><tbody id="aInvites"></tbody></table></div></div>
+      <div><h2>People with access</h2>
+        <div class="scroll"><table><thead><tr><th>Person</th><th>How</th><th>Since</th><th></th></tr></thead><tbody id="aAllowed"></tbody></table></div></div>
+      <div><h2>Blocked</h2>
+        <div class="scroll"><table><thead><tr><th>Person</th><th>Since</th><th></th></tr></thead><tbody id="aBlocked"></tbody></table></div></div>
     </section>
 
     <section class="view" id="v-tools" hidden aria-labelledby="h-tools">

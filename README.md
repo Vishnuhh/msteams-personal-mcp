@@ -202,21 +202,39 @@ Add → Custom domain**.)
 
 Also set `REPO_URL` in `wrangler.toml` to your repository so the sign-in page links to it.
 
-### 7. (Optional) Server settings
+### 7. Decide who can use it
+
+Personal Microsoft accounts have no company domain, so the server decides access per account. Set
+`ADMIN_USERNAME` and `ADMIN_PASSWORD` (secrets, password at least 12 characters), open `/admin`, then
+**Access**:
+
+- **Teams groups.** Add one or more group chats (their id looks like `19:…@thread.v2`; ask Claude
+  "what is the chat id of the … group?"). Members get in automatically. Membership is checked with
+  the person's own sign-in when they connect and again once a day, so leaving the group ends their access.
+- **Invite links.** For people outside your groups. Set how many uses and how many days; whoever signs
+  in through the link keeps access until you remove them.
+- **Waiting.** Anyone else is refused, their Microsoft sign-in is not stored, and they appear here
+  with **Approve** and **Block**. Connections that existed before access was restricted keep working
+  and are listed here too, until you approve or remove them.
+
+Access is restricted by default once admin sign-in is set up; without it, the server is open to any
+personal Microsoft account. You can switch between **Restricted** and **Open** on the Access page.
+
+### 8. (Optional) Server settings
 
 Set these as Wrangler vars or secrets (`npx wrangler secret put NAME`). All are optional.
 
 | Setting | Effect |
 |---|---|
 | `ACCESS_CODE` (secret) | People must enter this team access code before they can sign in. |
-| `ALLOWED_ACCOUNTS` | Comma-separated Teams ids (`8:live:.cid.…`) allowed to sign in. Others see their id to send to you. |
+| `ALLOWED_ACCOUNTS` | Comma-separated Teams ids (`8:live:.cid.…`) always let in. When access is open, only these accounts may sign in. |
 | `DISABLE_PERSONAL_URLS` | `true` = connectors only: personal URLs are refused and no longer offered. |
 | `NEW_CONNECTION_ALERTS` | `false` = don't post a note to the user's Teams Notes on each new connection (on by default). |
 | `ADMIN_TOKEN` (secret) | Enables `GET /admin/stats` (anonymous counts) with `Authorization: Bearer <token>`. |
 
 Connections unused for 90 days end automatically; a nightly job (cron in `wrangler.toml`) removes stale data.
 
-### 8. Share it
+### 9. Share it
 
 Send people the base URL, for example `https://teams-mcp.yourdomain.com`. Each person follows
 [Connecting a client to a remote server](#connecting-a-client-to-a-remote-server).
@@ -402,7 +420,8 @@ Clients that support MCP prompts (Claude Code `/` menu, Claude desktop "+" menu,
     200 changes a day. Microsoft "slow down" responses are retried once, then explained.
   - Each new connection posts a note to the person's own Teams Notes, connections end after 90 days
     unused, and `teams_logout` with `everywhere=true` ends all of an account's connections.
-  - Optional access gate (team access code or allowed accounts); see the server settings above.
+  - Access per account: members of chosen Teams groups (re-checked daily), invite links, or approval.
+    Refused sign-ins are dropped before anything is stored. See "Decide who can use it" above.
 - **App sign-in (OAuth 2.1).** The server is its own authorization server: discovery
   (RFC 9728 / RFC 8414), dynamic client registration (RFC 7591), authorization code with PKCE S256
   only, single-use codes valid 10 minutes, exact redirect-URI matching, resource indicators

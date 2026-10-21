@@ -5,7 +5,7 @@
 
 const escapeAttr = (s) => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
 
-export function renderPage({ repoUrl = 'https://github.com/', version = '', accessCodeRequired = false, personalUrls = true } = {}) {
+export function renderPage({ repoUrl = 'https://github.com/', version = '', accessCodeRequired = false, personalUrls = true, restricted = false } = {}) {
   const repo = escapeAttr(repoUrl);
   const access = accessCodeRequired
     ? '<div class="access"><label for="accessCode">Team access code</label><input id="accessCode" autocomplete="off" spellcheck="false"></div>'
@@ -155,11 +155,12 @@ code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size
   </div>
   <div class="foot rise" style="--i:3">
     <p class="lead">Use your personal Microsoft Teams (teams.live.com) from Claude, Cursor or VS Code. Your app asks you to sign in with a code at Microsoft. That's it.</p>
-    ${personalUrls ? `<div class="alt">
+    <div class="alt" id="alt">
       ${access}
-      <button class="textbtn" type="button" id="start">App can't sign in? Get a personal URL</button>
+      <button class="btn" type="button" id="invite" hidden>Accept your invite</button>
+      ${personalUrls ? `<button class="textbtn" type="button" id="start">App can't sign in? Get a personal URL</button>` : ''}
       <p class="status" id="status" role="status"></p>
-    </div>` : ''}
+    </div>
   </div>
 </section>
 
@@ -184,6 +185,7 @@ code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size
     <h2 id="notesTitle">Good to know</h2>
     <ul>
       <li>Personal Microsoft accounts only, not work or school Teams.</li>
+      ${restricted ? '<li>For invited people only: members of the team\'s Teams groups, or anyone with an invite link. Others are asked to wait for approval.</li>' : ''}
       <li>Your password stays with Microsoft. The server keeps only an encrypted sign-in that your app's key unlocks.</li>
       <li>To disconnect, ask your assistant to run <code>teams_logout</code> or remove the connector.</li>
       <li>Usage is counted per person: which tools are used and how often. Your messages, chats and contacts are never recorded.</li>
@@ -241,22 +243,33 @@ code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size
   /* personal URL: the sign-in code takes the frame's place in the sentence */
   var loginId = null, timer = null;
   function status(msg, err) { var s = $('status'); s.textContent = msg; s.className = 'status' + (err ? ' err' : ''); }
-  function frame(label, big, cls, hint, copyText) {
+  function frame(label, big, cls, hint, copyText, copyLabel) {
     var f = $('frame'); f.innerHTML = '';
     var l = document.createElement('span'); l.className = 'lbl'; l.textContent = label; f.appendChild(l);
     var b = document.createElement('span'); b.className = cls; b.textContent = big; f.appendChild(b);
     if (hint) f.appendChild(hint);
     if (copyText) {
-      var btn = document.createElement('button'); btn.type = 'button'; btn.className = 'btn copy'; btn.textContent = 'Copy code';
-      btn.addEventListener('click', function () { copy(copyText, btn, 'Copy code'); });
+      var cl = copyLabel || 'Copy code';
+      var btn = document.createElement('button'); btn.type = 'button'; btn.className = 'btn copy'; btn.textContent = cl;
+      btn.addEventListener('click', function () { copy(copyText, btn, cl); });
       f.appendChild(btn);
     }
   }
-  if ($('start')) $('start').addEventListener('click', async function () {
-    $('start').disabled = true; status('Asking Microsoft for a code…');
+  /* invite link (?invite=…): one sign-in grants access; the code is dropped from the address bar */
+  var invite = new URLSearchParams(location.search).get('invite'), btn = null;
+  if (invite) {
+    history.replaceState(null, '', location.pathname);
+    $('invite').hidden = false; if ($('start')) $('start').hidden = true;
+    status('You are invited. Sign in once with your personal Microsoft account to get access.');
+  } else if (!$('start')) $('alt').hidden = true;
+  if ($('start')) $('start').addEventListener('click', function () { begin($('start'), null); });
+  $('invite').addEventListener('click', function () { begin($('invite'), invite); });
+
+  async function begin(b, inv) {
+    btn = b; btn.disabled = true; status('Asking Microsoft for a code…');
     try {
       var code = $('accessCode') ? $('accessCode').value : '';
-      var r = await fetch('/api/login/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ accessCode: code }) });
+      var r = await fetch('/api/login/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ accessCode: code, invite: inv }) });
       var j = await r.json();
       if (!r.ok) throw new Error(j.error || 'Could not start sign-in.');
       loginId = j.loginId;
@@ -270,8 +283,8 @@ code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size
       status('Waiting for you to approve at Microsoft…');
       $('status').classList.add('pulse');
       schedule(j.interval);
-    } catch (e) { status(e.message + ' Try again.', true); $('start').disabled = false; }
-  });
+    } catch (e) { status(e.message, true); btn.disabled = false; }
+  }
   function schedule(sec) { clearTimeout(timer); timer = setTimeout(poll, Math.max(3, sec) * 1000); }
   async function poll() {
     try {
@@ -280,10 +293,16 @@ code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size
       if (j.status === 'approved') return done(j);
       if (j.status === 'pending') return schedule(j.interval || 5);
       throw new Error(j.error || 'Sign-in failed.');
-    } catch (e) { $('status').classList.remove('pulse'); status(e.message + ' Try again.', true); $('start').disabled = false; }
+    } catch (e) { $('status').classList.remove('pulse'); status(e.message, true); btn.disabled = false; }
   }
   function done(j) {
     $('status').classList.remove('pulse');
+    if (j.accessGranted) {
+      frame('You have access. Add this address to your app as an MCP connector', mcp, 'addr', null, mcp, 'Copy address');
+      $('invite').hidden = true;
+      status('Done. Add the address in Claude, Claude Code, Cursor or VS Code and sign in there.');
+      return;
+    }
     frame('Signed in', 'Connected', 'code done');
     status('Your personal URL is below.');
     $('mcpUrl').textContent = j.mcpUrl;

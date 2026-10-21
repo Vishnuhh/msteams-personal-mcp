@@ -230,7 +230,11 @@ export function createTeamsClient(getSkypeToken, hooks = {}) {
         err.throttled = true;
         throw err;
       }
-      if (!res.ok) throw new Error(`Teams API ${method} ${new URL(url).pathname} failed (${res.status}): ${text.slice(0, 300)}`);
+      if (!res.ok) {
+        const err = new Error(`Teams API ${method} ${new URL(url).pathname} failed (${res.status}): ${text.slice(0, 300)}`);
+        err.status = res.status;
+        throw err;
+      }
       let data = {};
       try { data = text ? JSON.parse(text) : {}; } catch { /* empty or non-JSON success */ }
       return withHeaders ? { data, headers: res.headers } : data;
@@ -682,6 +686,17 @@ export function createTeamsClient(getSkypeToken, hooks = {}) {
     return request(`${CHATSVC_ROOT}/threads/${encodeURIComponent(conversationId)}?view=msnp24Equivalent`);
   }
 
+  /** Whether the signed-in user is in a group chat: { member, topic }. Teams answers 403/404 for others. */
+  async function membership(conversationId) {
+    let t;
+    try { t = await rawThread(conversationId); } catch (e) {
+      if (e.status === 403 || e.status === 404) return { member: false, topic: null };
+      throw e;
+    }
+    const self = await me();
+    return { member: Boolean(self) && (t.members || []).some((m) => m.id === self), topic: t.properties?.topic ? stripHtml(t.properties.topic) : null };
+  }
+
   function isPinned(m) {
     const p = parseJsonish(m.properties?.pinned);
     if (!p) return false;
@@ -791,7 +806,7 @@ export function createTeamsClient(getSkypeToken, hooks = {}) {
   }
 
   return {
-    displayName: selfName, getGroupInfo, getPinnedMessages, getMessageResponses, createGroupChat, renameGroup, setMember, leaveGroup,
+    displayName: selfName, membership, getGroupInfo, getPinnedMessages, getMessageResponses, createGroupChat, renameGroup, setMember, leaveGroup,
     searchMessages, getSharedFiles,
     whoAmI, listChats, findChats, getChatMembers, getMessages, getMessage, getUnread, getMyRecentMessages, getMentions,
     sendMessage, replyToMessage, editMessage, deleteMessage, react, markRead,
