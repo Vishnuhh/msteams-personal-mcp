@@ -34,7 +34,11 @@ import { renderPage } from './remote/page.js';
 import { renderAuthorizePage, renderAuthorizeError } from './remote/authorize-page.js';
 import { renderChangelogPage } from './remote/changelog.js';
 import { limit, toolGuard } from './remote/limits.js';
-import { adminConfigured, isAdmin, login as adminLogin, logout as adminLogout, overview as adminOverview, endConnection, renderAdminPage } from './remote/admin.js';
+import {
+  adminConfigured, isAdmin, login as adminLogin, logout as adminLogout, overview as adminOverview, endConnection, renderAdminPage,
+  person as adminPerson, personCsvResponse, endPerson, setPersonLimit,
+} from './remote/admin.js';
+import { usageRecorder } from './remote/usage.js';
 import CHANGELOG from '../CHANGELOG.md';
 import pkg from '../package.json';
 import {
@@ -182,9 +186,12 @@ async function loginPoll(request, env, ctx) {
   stat(env, ctx, 'signin');
 
   const origin = new URL(request.url).origin;
-  ctx.waitUntil(createTeamsClient(async () => skype).displayName()
-    .then((name) => name && env.DB.prepare('UPDATE users SET account_name = ? WHERE id = ?').bind(name, userId).run())
-    .catch(() => {}));
+  ctx.waitUntil((async () => {
+    const name = await createTeamsClient(async () => skype).displayName().catch(() => null);
+    const hash = mri ? await accountHash(env, mri) : null;
+    if (name) await env.DB.prepare('UPDATE users SET account_name = ? WHERE id = ?').bind(name, userId).run();
+    if (hash) await rememberPerson(env, hash, name, now);
+  })().catch(() => {}));
   if (cfg.alerts) {
     const info = req !== undefined ? await requestInfo(env, req) : null;
     ctx.waitUntil(newConnectionAlert(skype, {
@@ -280,16 +287,21 @@ async function handleMcp(request, env, url, ctx) {
   }
 
   const getSkypeToken = userTokenSource(env, accessKey, userId);
-  const client = createTeamsClient(getSkypeToken);
-  // Date-level last use, written at most once a day; backfill the account hash for older connections.
-  stat(env, ctx, 'mcp_request');
+  // Per-person usage counts for this request (numbers only), written in one batch when the response is ready.
+  const usage = usageRecorder({ userId, accountHash: row.account_hash, now });
+  const client = createTeamsClient(getSkypeToken, { onTeamsCall: () => usage.add('teams_call'), onThrottled: () => usage.add('throttled') });
+  // Date-level last use, written at most once a day; backfill the account hash and name for older connections.
   if (new Date(lastUsed).toISOString().slice(0, 10) !== today() || !row.account_hash || !row.account_name) {
     ctx.waitUntil((async () => {
       const hash = row.account_hash || (await getSkypeToken().then((s) => selfMri(s.token)).then((m) => (m ? accountHash(env, m) : null)).catch(() => null));
       const name = row.account_name || (await client.displayName().catch(() => null));
       await env.DB.prepare('UPDATE users SET last_used_at = ?, account_hash = ?, account_name = ? WHERE id = ?').bind(now, hash, name, userId).run();
+      if (hash) await rememberPerson(env, hash, name, now);
     })().catch(() => {}));
   }
+  const capRow = row.account_hash
+    ? await env.DB.prepare('SELECT daily_writes FROM person_limits WHERE account_hash = ?').bind(row.account_hash).first().catch(() => null)
+    : null;
 
   const server = new McpServer(
     { name: 'teams-personal', version: VERSION },
@@ -321,15 +333,26 @@ async function handleMcp(request, env, url, ctx) {
     return { signedOut: true, connectionsEnded: ended, signInAgainAt: signInUrl };
   }));
 
-  const guard = toolGuard(env, userId, { onLimited: (m) => stat(env, ctx, m) });
+  const guard = toolGuard(env, userId, { onLimited: (m) => stat(env, ctx, m), ...(capRow ? { cap: capRow.daily_writes } : {}) });
   registerTeamsTools(server, client, {
-    beforeCall: async (name, kind) => { stat(env, ctx, `tool:${name}`); await guard(name, kind); },
+    beforeCall: guard,
+    afterCall: (name, kind, info) => usage.tool(name, kind, info),
   });
   registerTeamsPrompts(server);
 
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   await server.connect(transport);
-  return withCors(await transport.handleRequest(request));
+  const response = await transport.handleRequest(request);
+  ctx.waitUntil(env.DB.batch(usage.statements(env)).catch(() => {}));
+  return withCors(response);
+}
+
+/** Keeps a name for each Teams account, so usage history stays readable after connections end. */
+function rememberPerson(env, hash, name, now) {
+  return env.DB.prepare(
+    'INSERT INTO people (account_hash, name, first_seen, last_seen) VALUES (?, ?, ?, ?) ' +
+    'ON CONFLICT(account_hash) DO UPDATE SET name = COALESCE(excluded.name, people.name), last_seen = excluded.last_seen',
+  ).bind(hash, name || null, now, now).run();
 }
 
 // ---------------------------------------------------------------- admin + housekeeping
@@ -346,6 +369,7 @@ async function cleanup(env) {
     env.DB.prepare('DELETE FROM oauth_codes WHERE expires_at < ?').bind(now),
     env.DB.prepare('DELETE FROM usage WHERE day < ?').bind(new Date(now - 3 * DAY_MS).toISOString().slice(0, 10)),
     env.DB.prepare('DELETE FROM stats WHERE day < ?').bind(new Date(now - 90 * DAY_MS).toISOString().slice(0, 10)),
+    env.DB.prepare('DELETE FROM usage_daily WHERE day < ?').bind(new Date(now - 90 * DAY_MS).toISOString().slice(0, 10)),
   ]);
   const expired = results[0]?.meta?.changes || 0;
   await env.DB.prepare("INSERT INTO stats (day, metric, count) VALUES (?, 'cleanup_run', 1) ON CONFLICT(day, metric) DO UPDATE SET count = count + 1").bind(today()).run();
@@ -443,6 +467,18 @@ export default {
           stat(env, ctx, 'admin_ended_connection');
           return await endConnection(env, end[1]);
         }
+        const p = path.match(/^\/admin\/api\/person\/([^/]+)(?:\/(csv|end|limit))?$/);
+        if (p) {
+          const key = decodeURIComponent(p[1]);
+          if (!p[2] && method === 'GET') return await adminPerson(env, key, { inactiveDays: INACTIVE_DAYS });
+          if (p[2] === 'csv' && method === 'GET') return await personCsvResponse(env, key);
+          if (p[2] === 'end' && method === 'POST') {
+            skypeCache.clear();
+            stat(env, ctx, 'admin_ended_connection');
+            return await endPerson(env, key);
+          }
+          if (p[2] === 'limit' && method === 'POST') return await setPersonLimit(request, env, key);
+        }
         return json({ error: 'Not found' }, 404);
       }
       if (path === '/mcp' || path.startsWith('/mcp/')) return await handleMcp(request, env, url, ctx);
@@ -455,5 +491,16 @@ export default {
 
   async scheduled(event, env, ctx) {
     ctx.waitUntil(cleanup(env));
+    // Optional: send the dashboard's alerts to a webhook (Slack, Discord, ntfy, ...). The server cannot post to Teams:
+    // every Teams sign-in is encrypted with its owner's own key.
+    if (env.ALERT_WEBHOOK_URL) {
+      ctx.waitUntil((async () => {
+        const s = settings(env);
+        const o = await adminOverview(env, { version: VERSION, settings: { accessCodeRequired: s.accessCodeRequired, allowListSize: s.allowList.length, personalUrls: s.personalUrls, alerts: s.alerts }, inactiveDays: INACTIVE_DAYS });
+        if (!o.alerts.length) return;
+        const text = `Teams Personal MCP: ${o.alerts.length} alert(s)\n` + o.alerts.map((a) => `- ${a.text}`).join('\n');
+        await fetch(env.ALERT_WEBHOOK_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, content: text }) });
+      })().catch(() => {}));
+    }
   },
 };

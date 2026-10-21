@@ -5,6 +5,14 @@ What changed in each release. Newest first. The server shows this page at `/chan
 Format: every release has a `## [version] - date` heading, one summary line, and short bullets under
 Added, Changed, Fixed or Security. A release cannot be deployed without its entry (`npm test` checks it).
 
+## [0.8.0] - 2026-10-21
+
+Usage counted per person.
+
+### Changed
+- Usage is now counted per person: which tools are used, how often, how long they take and how much they return. Message text, chat names and contacts are never recorded.
+- The home page says so under Good to know.
+
 ## [0.7.3] - 2026-10-21
 
 Sign-in codes copy cleanly.

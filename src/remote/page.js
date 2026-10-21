@@ -186,6 +186,7 @@ code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size
       <li>Personal Microsoft accounts only, not work or school Teams.</li>
       <li>Your password stays with Microsoft. The server keeps only an encrypted sign-in that your app's key unlocks.</li>
       <li>To disconnect, ask your assistant to run <code>teams_logout</code> or remove the connector.</li>
+      <li>Usage is counted per person: which tools are used and how often. Your messages, chats and contacts are never recorded.</li>
     </ul>
   </section>
 </div>

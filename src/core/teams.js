@@ -196,8 +196,10 @@ export function buildContent(text) {
 
 /**
  * @param {() => Promise<{token: string, region?: string|null}>} getSkypeToken
+ * @param {{ onTeamsCall?: () => void, onThrottled?: () => void }} [hooks] usage counting (remote server)
  */
-export function createTeamsClient(getSkypeToken) {
+export function createTeamsClient(getSkypeToken, hooks = {}) {
+  const counted = (fn) => { try { fn?.(); } catch { /* counting never breaks a call */ } };
   async function chatHeaders(body) {
     const { token } = await getSkypeToken();
     return {
@@ -216,9 +218,11 @@ export function createTeamsClient(getSkypeToken) {
 
   async function request(url, { method = 'GET', body, withHeaders = false } = {}) {
     for (let attempt = 0; ; attempt++) {
+      counted(hooks.onTeamsCall);
       const res = await fetch(url, { method, headers: await chatHeaders(body), body: body ? JSON.stringify(body) : undefined });
       const text = await res.text();
       if (res.status === 429 || res.status === 503) {
+        counted(hooks.onThrottled);
         // Microsoft is throttling this account: honour a short Retry-After once, otherwise explain.
         const wait = Number(res.headers.get('Retry-After')) || 2;
         if (attempt === 0 && wait <= 5) { await new Promise((r) => setTimeout(r, wait * 1000)); continue; }
@@ -256,6 +260,7 @@ export function createTeamsClient(getSkypeToken) {
     const hit = contactsCache.get(self);
     if (hit && Date.now() - hit.at < CONTACTS_TTL_MS) return hit.names;
     const { token } = await getSkypeToken();
+    counted(hooks.onTeamsCall);
     const res = await fetch(`${CONTACTS}/${encodeURIComponent(self.replace(/^8:/, ''))}/contacts`, {
       headers: { 'X-Skypetoken': token, Accept: 'application/json', 'User-Agent': USER_AGENT },
     });
