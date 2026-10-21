@@ -30,4 +30,5 @@ jobs:
             '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
             | (cat; sleep 3) | timeout 10 node src/index.js | grep -q '"teams_send_message"'
       - name: Worker bundles (dry run, no Cloudflare account needed)
+        if: matrix.node >= 22   # wrangler needs Node 22+
         run: npx wrangler deploy --dry-run --outdir dist

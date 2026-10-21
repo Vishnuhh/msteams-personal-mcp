@@ -122,7 +122,7 @@ account and gets their **own** private MCP URL.
 HTTPS and custom domains, and D1 stores sign-ins durably. The free plan currently allows 100,000
 requests a day, which is plenty for a team.
 
-**Requirements:** a free [Cloudflare account](https://dash.cloudflare.com/sign-up), Node.js 18+, git.
+**Requirements:** a free [Cloudflare account](https://dash.cloudflare.com/sign-up), Node.js 22+ (Wrangler needs it), git.
 
 ### 1. Get the code
 
