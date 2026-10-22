@@ -233,6 +233,7 @@ Set these as Wrangler vars or secrets (`npx wrangler secret put NAME`). All are 
 | `ALLOWED_ACCOUNTS` | Comma-separated Teams ids (`8:live:.cid.…`) always let in. When access is open, only these accounts may sign in. |
 | `DISABLE_PERSONAL_URLS` | `true` = connectors only: personal URLs are refused and no longer offered. |
 | `NEW_CONNECTION_ALERTS` | `false` = don't post a note to the user's Teams Notes on each new connection (on by default). |
+| `BRAND_LOGO`, `BRAND_NAME`, `BRAND_URL` | Your organisation's logo in the home page's top bar. Put the image in a static-assets folder (`[assets] directory = "./public"` in `wrangler.toml`), set `BRAND_LOGO` to its path (e.g. `/brand/logo.webp`), `BRAND_NAME` to its alt text and optionally `BRAND_URL` (https) to link it. |
 | `ADMIN_TOKEN` (secret) | Enables `GET /admin/stats` (anonymous counts) with `Authorization: Bearer <token>`. |
 
 Connections unused for 90 days end automatically; a nightly job (cron in `wrangler.toml`) removes stale data.

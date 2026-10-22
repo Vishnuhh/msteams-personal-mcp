@@ -21,6 +21,8 @@
 //                          groups, invite links, approvals) is managed in the admin area: see remote/access.js
 //   DISABLE_PERSONAL_URLS  "true" = connectors only; /mcp/<key> URLs and new personal URLs are refused
 //   NEW_CONNECTION_ALERTS  "false" = don't post a note to the user's Teams Notes on each new connection
+//   BRAND_LOGO, BRAND_NAME, BRAND_URL   optional organisation logo on the home page (a path served by this
+//                          Worker's static assets, e.g. /brand/logo.webp), its alt text, and where it links
 //   ADMIN_USERNAME, ADMIN_PASSWORD   admin sign-in for /admin (secrets; password at least 12 characters)
 //   ADMIN_TOKEN            bearer token for /admin/stats and /admin/api/* (secret, for scripts)
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -454,7 +456,8 @@ export default {
       if (limited) return limited;
 
       if (path === '/' && method === 'GET') {
-        return html(renderPage({ repoUrl: env.REPO_URL, version: 'v' + VERSION, accessCodeRequired: cfg.accessCodeRequired, personalUrls: cfg.personalUrls, restricted: (await modeOf(env)).restricted }));
+        return html(renderPage({ repoUrl: env.REPO_URL, version: 'v' + VERSION, accessCodeRequired: cfg.accessCodeRequired, personalUrls: cfg.personalUrls, restricted: (await modeOf(env)).restricted,
+          brand: env.BRAND_LOGO ? { logo: env.BRAND_LOGO, name: env.BRAND_NAME, url: env.BRAND_URL } : null }));
       }
       if ((path === '/changelog' || path === '/changelog/') && method === 'GET') {
         return html(renderChangelogPage({ markdown: CHANGELOG, liveVersion: VERSION, repoUrl: env.REPO_URL }));

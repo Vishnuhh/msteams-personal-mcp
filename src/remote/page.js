@@ -5,8 +5,15 @@
 
 const escapeAttr = (s) => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
 
-export function renderPage({ repoUrl = 'https://github.com/', version = '', accessCodeRequired = false, personalUrls = true, restricted = false } = {}) {
+export function renderPage({ repoUrl = 'https://github.com/', version = '', accessCodeRequired = false, personalUrls = true, restricted = false, brand = null } = {}) {
   const repo = escapeAttr(repoUrl);
+  // Optional organisation logo in the top bar (BRAND_LOGO / BRAND_NAME / BRAND_URL): a same-origin path, so the CSP stays 'self'.
+  const logo = brand?.logo && /^\/[A-Za-z0-9/_.-]+$/.test(brand.logo)
+    ? `<img src="${escapeAttr(brand.logo)}" alt="${escapeAttr(brand.name || 'Logo')}" class="brandlogo">`
+    : '';
+  const brandMark = logo
+    ? (brand.url && /^https:\/\//.test(brand.url) ? `<a class="brand" href="${escapeAttr(brand.url)}" rel="noopener">${logo}</a>` : `<span class="brand">${logo}</span>`) + '<span class="brandsep" aria-hidden="true"></span>'
+    : '';
   const access = accessCodeRequired
     ? '<div class="access"><label for="accessCode">Team access code</label><input id="accessCode" autocomplete="off" spellcheck="false"></div>'
     : '';
@@ -60,6 +67,14 @@ code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size
 .nav .word { font-weight: 600; letter-spacing: -0.03em; text-decoration: none; }
 .nav .link { font-size: var(--step-small); font-weight: 500; text-decoration: none; transition: opacity .18s; }
 .nav .link:hover { opacity: .6; }
+.nav .lead-mark { display: flex; align-items: center; gap: 14px; min-width: 0; }
+.nav .brand { display: flex; }
+.nav .brandlogo { height: 32px; width: auto; display: block; }
+.nav .brandsep { width: 1px; height: 22px; background: currentColor; opacity: .2; }
+@media (max-width: 560px) {
+  .nav.branded > span:last-child { display: none; }
+  .nav .brandlogo { height: 26px; }
+}
 
 /* hero: one screen, the frame inside the sentence */
 .hero { min-height: calc(100svh - 64px); display: flex; flex-direction: column; justify-content: center; gap: clamp(36px, 6vw, 72px);
@@ -137,8 +152,8 @@ code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size
 </style>
 </head>
 <body>
-<nav class="nav" aria-label="Main">
-  <a class="word" href="/">Teams Personal MCP</a>
+<nav class="nav${brandMark ? ' branded' : ''}" aria-label="Main">
+  <span class="lead-mark">${brandMark}<a class="word" href="/">Teams Personal MCP</a></span>
   <span><a class="link" href="/changelog">Changelog</a> &nbsp; <a class="link" href="${repo}">Source on GitHub</a></span>
 </nav>
 
