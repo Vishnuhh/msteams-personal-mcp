@@ -2,6 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { renderPage } from '../src/remote/page.js';
 
+test('hidden controls stay hidden even when styled as buttons', () => {
+  assert.match(renderPage(), /\[hidden\] \{ display: none !important; \}/);
+  assert.match(renderPage(), /<button class="btn" type="button" id="invite" hidden>/);
+});
+
 test('home page shows an organisation logo only from this server', () => {
   const plain = renderPage();
   assert.doesNotMatch(plain, /class="brandlogo"/);

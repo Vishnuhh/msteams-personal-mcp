@@ -67,13 +67,14 @@ code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size
 .nav .word { font-weight: 600; letter-spacing: -0.03em; text-decoration: none; }
 .nav .link { font-size: var(--step-small); font-weight: 500; text-decoration: none; transition: opacity .18s; }
 .nav .link:hover { opacity: .6; }
+[hidden] { display: none !important; }
 .nav .lead-mark { display: flex; align-items: center; gap: 14px; min-width: 0; }
 .nav .brand { display: flex; }
-.nav .brandlogo { height: 32px; width: auto; display: block; }
+.nav .brandlogo { height: 40px; width: auto; display: block; }
 .nav .brandsep { width: 1px; height: 22px; background: currentColor; opacity: .2; }
 @media (max-width: 560px) {
   .nav.branded > span:last-child { display: none; }
-  .nav .brandlogo { height: 26px; }
+  .nav .brandlogo { height: 32px; }
 }
 
 /* hero: one screen, the frame inside the sentence */
