@@ -151,7 +151,7 @@ export function renderAuthorizePage({ reqId, clientName, redirectHost, accessCod
     <span class="half r rise" style="--i:2" aria-hidden="true">in ${esc(short)}.</span>
   </div>
   <div class="foot rise" style="--i:3">
-    <p class="about"><b>${esc(clientName)}</b> wants to read and send messages in your personal Microsoft Teams (teams.live.com).
+    <p class="about"><b>${esc(clientName)}</b> wants to read and send messages, and read files and pictures shared in your chats, in your personal Microsoft Teams (teams.live.com).
       You approve with a code on Microsoft's own page; your password never reaches this server.
       Afterwards you return to <b>${esc(redirectHost)}</b>.</p>
     <div class="act">

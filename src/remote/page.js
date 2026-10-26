@@ -204,6 +204,7 @@ code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size
       ${restricted ? '<li>For invited people only: members of the team\'s Teams groups, or anyone with an invite link. Others are asked to wait for approval.</li>' : ''}
       <li>Your password stays with Microsoft. The server keeps only an encrypted sign-in that your app's key unlocks.</li>
       <li>To disconnect, ask your assistant to run <code>teams_logout</code> or remove the connector.</li>
+      <li>Claude can read files and pictures shared in your chats (Word, Excel, PowerPoint, text, images). It only reads; nothing is copied or stored on the server.</li>
       <li>Usage is counted per person: which tools are used and how often. Your messages, chats and contacts are never recorded.</li>
     </ul>
   </section>

@@ -371,7 +371,9 @@ app also revokes it. You can also remove the app's access in your Microsoft acco
 | `teams_get_message` | One message by id, with full details | ✓ | ✓ |
 | `teams_get_mentions` | Messages where someone @mentioned you (default: last 7 days) | ✓ | ✓ |
 | `teams_search_messages` | Search message text across recent chats or one chat (every word must match; default: last 30 days) | ✓ | ✓ |
-| `teams_get_shared_files` | Files and links shared in a chat, with who shared them and when | ✓ | ✓ |
+| `teams_get_shared_files` | Files, pictures and links shared in a chat (group or 1:1), with who shared them and when; filter by type (`pdf`, `docx`, …) | ✓ | ✓ |
+| `teams_read_file` | Read a shared file or picture: Word, Excel (as CSV), PowerPoint, notebooks, text, code and CSV as text; pictures are shown; PDFs on the local server. Up to 15 MB, long text cut at 40,000 characters. Read-only | ✓ | ✓ (no PDF text) |
+| `teams_download_file` | Save a shared file or picture to `Downloads/Teams` on your computer (up to 100 MB; programs and scripts are not saved) | ✓ | – |
 | `teams_get_unread` | Unread chats and the messages after your read position (doesn't mark anything as read) | ✓ | ✓ |
 | `teams_get_my_recent_messages` | What you sent recently, across your latest chats (optional `since`) | ✓ | ✓ |
 | `teams_mark_read` | Mark a chat as read (up to a message, or the newest) | ✓ | ✓ |
@@ -408,6 +410,13 @@ Clients that support MCP prompts (Claude Code `/` menu, Claude desktop "+" menu,
   server never sees your password, and no Azure app registration is needed.
 - **Teams personal APIs.** After sign-in, the server exchanges your token for a Teams session at
   `teams.live.com` and calls the same chat service the Teams web app uses.
+- **Files shared in chats** live in the sender's OneDrive. To read one, the server gets a short-lived
+  Microsoft Graph token from the same sign-in (Microsoft pre-approves the Teams app for this, so there is
+  no extra consent screen) and downloads only the file you asked for, from a chat you are in. Microsoft
+  issues this access as read-write to OneDrive; the tools only read files posted in your chats, and
+  nothing is copied or kept on the server. Pasted pictures come from Skype's media service with your Teams
+  session. Tokens are only ever sent to Microsoft's own hosts; OneDrive's download links are fetched
+  without any token.
 - **Local mode:** your refresh token is encrypted (AES-256-GCM) in your user profile with a
   machine- and user-bound key.
 - **Remote mode, per-user isolation:**

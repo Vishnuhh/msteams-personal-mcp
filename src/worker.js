@@ -29,7 +29,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { CfWorkerJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/cfworker';
 import { z } from 'zod';
-import { requestDeviceCode, pollDeviceCode, exchangeForSkypeToken, selfMri } from './core/oauth.js';
+import { requestDeviceCode, pollDeviceCode, exchangeForSkypeToken, exchangeForGraphToken, selfMri } from './core/oauth.js';
 import { createTeamsClient } from './core/teams.js';
 import { registerTeamsTools, registerTeamsPrompts, wrap } from './core/tools.js';
 import { newSecret, sha256Hex, sha256B64, sealJson, openJson, safeEqual } from './remote/crypto.js';
@@ -62,6 +62,9 @@ const INACTIVE_DAYS = 90;
 
 // Per-isolate cache of skypetokens, keyed by user row id. Saves a D1 read + decrypt per request.
 const skypeCache = new Map();
+// Per-isolate cache of Microsoft Graph tokens (reading files shared in chats), keyed by user row id.
+// Every request re-checks the connection in D1 first, so a revoked connection can't use a cached token.
+const graphCache = new Map();
 
 const json = (data, status = 200, headers = {}) =>
   new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...headers } });
@@ -327,9 +330,19 @@ async function handleMcp(request, env, url, ctx) {
   }
 
   const getSkypeToken = userTokenSource(env, accessKey, userId);
+  // Files shared in chats live in the sender's OneDrive: a short-lived Graph token from the same sealed sign-in.
+  const getGraphToken = async () => {
+    const hit = graphCache.get(userId);
+    if (hit && Date.now() < hit.expiresAt - 60_000) return hit.token;
+    const sealed = await env.DB.prepare('SELECT data FROM users WHERE id = ?').bind(userId).first();
+    if (!sealed) throw new Error('This connection has been revoked. Sign in again.');
+    const g = await exchangeForGraphToken((await openJson(accessKey, salt(env), USER_INFO, sealed.data)).refreshToken);
+    graphCache.set(userId, g);
+    return g.token;
+  };
   // Per-person usage counts for this request (numbers only), written in one batch when the response is ready.
   const usage = usageRecorder({ userId, accountHash: row.account_hash, now });
-  const client = createTeamsClient(getSkypeToken, { onTeamsCall: () => usage.add('teams_call'), onThrottled: () => usage.add('throttled') });
+  const client = createTeamsClient(getSkypeToken, { onTeamsCall: () => usage.add('teams_call'), onThrottled: () => usage.add('throttled'), getGraphToken });
   // Group members are re-checked once a day, in the background; leaving every access group ends their connections.
   if (access === 'recheck') ctx.waitUntil(recheckMember(env, client, row.account_hash, now).catch(() => {}));
   // Date-level last use, written at most once a day; backfill the account hash and name for older connections.

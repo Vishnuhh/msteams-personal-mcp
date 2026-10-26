@@ -3,6 +3,7 @@
 // Runs on Node 18+ and Cloudflare Workers. Each client is bound to one user's token source.
 import { selfMri, USER_AGENT } from './oauth.js';
 import { normalizeReactionKey, describeReaction } from './emojis.js';
+import { attachmentsOf, readCapped, isFileDownloadUrl, extOf, toBase64, mb, LIMITS } from './files.js';
 
 const CHATSVC_ROOT = 'https://teams.live.com/api/chatsvc/consumer/v1';
 const CHATSVC = `${CHATSVC_ROOT}/users/ME`;
@@ -196,7 +197,8 @@ export function buildContent(text) {
 
 /**
  * @param {() => Promise<{token: string, region?: string|null}>} getSkypeToken
- * @param {{ onTeamsCall?: () => void, onThrottled?: () => void }} [hooks] usage counting (remote server)
+ * @param {{ onTeamsCall?: () => void, onThrottled?: () => void, getGraphToken?: () => Promise<string> }} [hooks]
+ *   usage counting (remote server), and a Microsoft Graph token source for reading files shared in chats
  */
 export function createTeamsClient(getSkypeToken, hooks = {}) {
   const counted = (fn) => { try { fn?.(); } catch { /* counting never breaks a call */ } };
@@ -693,14 +695,78 @@ export function createTeamsClient(getSkypeToken, hooks = {}) {
   }
 
   /** Files and links shared in one chat, newest first. */
-  async function getSharedFiles(conversationId, { since = '90d', limit = 50 } = {}) {
-    const msgs = await getMessages(conversationId, { limit: 500, since });
-    const files = [], links = [];
-    for (const m of msgs) {
-      for (const f of m.files || []) files.push({ ...f, from: m.from, time: m.time, messageId: m.id });
-      for (const l of m.links || []) links.push({ ...l, from: m.from, time: m.time, messageId: m.id });
+  /** Files, pictures and links shared in a chat, newest first. messageId + index identify each for readAttachment. */
+  async function getSharedFiles(conversationId, { since = '90d', limit = 50, type = null } = {}) {
+    const [self, names] = await Promise.all([me(), contactNames().catch(() => new Map())]);
+    const raw = await rawMessages(conversationId, { limit: 500, since: parseTime(since) });
+    const files = [], images = [], links = [];
+    for (const m of raw) {
+      const f = formatMessage(m, self, names);
+      for (const a of attachmentsOf(m)) {
+        const item = { messageId: f.id, index: a.index, name: a.name, type: a.kind === 'image' ? 'image' : a.ext || null, from: f.from, time: f.time };
+        if (a.kind === 'image') images.push(item);
+        else if (!type || a.ext === String(type).toLowerCase().replace(/^\./, '')) files.push(item);
+      }
+      for (const l of f.links || []) links.push({ ...l, from: f.from, time: f.time, messageId: f.id });
     }
-    return { files: files.slice(0, limit), links: links.slice(0, limit), scannedMessages: msgs.length };
+    return {
+      files: files.slice(0, limit),
+      images: type ? [] : images.slice(0, limit),
+      links: type ? [] : links.slice(0, limit),
+      scannedMessages: raw.length,
+    };
+  }
+
+  /**
+   * One file or picture from a message (index as listed by getSharedFiles), as bytes.
+   * Files come from the sharer's OneDrive through Microsoft Graph with this user's own token; the short-lived
+   * download link Graph returns is fetched without any token. Pictures come from Skype's media service.
+   * Returns { kind, name, ext, mimeType, size, bytes, openUrl }.
+   */
+  async function readAttachment(conversationId, messageId, index = 0, { maxBytes = LIMITS.readBytes } = {}) {
+    const list = attachmentsOf(await rawMessage(conversationId, messageId));
+    if (!list.length) throw new Error('That message has no files or pictures. Use teams_get_shared_files to find one.');
+    const a = list[index];
+    if (!a) throw new Error(`That message has ${list.length} attachment(s): use index 0 to ${list.length - 1}.`);
+
+    if (a.kind === 'image') {
+      const { token } = await getSkypeToken();
+      counted(hooks.onTeamsCall);
+      const res = await fetch(a.src, { headers: { Authorization: `skype_token ${token}`, 'User-Agent': USER_AGENT } });
+      if (!res.ok) throw new Error(`Could not open the picture (${res.status}). It may have been deleted.`);
+      const mimeType = (res.headers.get('content-type') || 'image/jpeg').split(';')[0].trim();
+      if (!mimeType.startsWith('image/')) throw new Error('That attachment is not a picture.');
+      const bytes = await readCapped(res, Math.min(maxBytes, LIMITS.imageBytes), 'picture');
+      return { kind: 'image', name: a.name, ext: mimeType.split('/')[1] || 'jpg', mimeType, size: bytes.length, bytes, openUrl: null };
+    }
+
+    if (!hooks.getGraphToken) throw new Error('Reading shared files is not available on this server.');
+    if (!a.shareUrl && !(a.driveId && a.itemId)) throw new Error('This file has no OneDrive link that can be opened.');
+    const path = a.shareUrl
+      ? `/shares/u!${toBase64(new TextEncoder().encode(a.shareUrl)).replace(/=+$/, '').replace(/\//g, '_').replace(/\+/g, '-')}/driveItem`
+      : `/drives/${encodeURIComponent(a.driveId)}/items/${encodeURIComponent(a.itemId)}`;
+    const token = await hooks.getGraphToken();
+    counted(hooks.onTeamsCall);
+    const meta = await fetch(`https://graph.microsoft.com/v1.0${path}`, {
+      headers: { Authorization: `Bearer ${token}`, Prefer: 'redeemSharingLinkIfNecessary', 'User-Agent': USER_AGENT },
+    });
+    if (meta.status === 401 || meta.status === 403 || meta.status === 404) {
+      throw new Error('You no longer have access to this file: it may have been deleted, moved or unshared.');
+    }
+    if (!meta.ok) throw new Error(`OneDrive could not open the file (${meta.status}). Try again later.`);
+    const item = await meta.json();
+    const name = item.name || a.name;
+    const size = Number(item.size) || 0;
+    if (size > maxBytes) {
+      throw new Error(`The file is too large to read here (${mb(size)}; the limit is ${mb(maxBytes)}). Open it in Teams or OneDrive${item.webUrl ? `: ${item.webUrl}` : '.'}`);
+    }
+    const link = item['@microsoft.graph.downloadUrl'];
+    if (!link || !isFileDownloadUrl(link)) throw new Error('OneDrive did not offer a download for this file.');
+    counted(hooks.onTeamsCall);
+    const res = await fetch(link, { headers: { 'User-Agent': USER_AGENT } });
+    if (!res.ok) throw new Error(`The download failed (${res.status}). Try again.`);
+    const bytes = await readCapped(res, maxBytes);
+    return { kind: 'file', name, ext: extOf(name), mimeType: item.file?.mimeType || null, size: bytes.length, bytes, openUrl: item.webUrl || null };
   }
 
   // ------------------------------------------------------------------ groups
@@ -830,7 +896,7 @@ export function createTeamsClient(getSkypeToken, hooks = {}) {
 
   return {
     displayName: selfName, membership, listGroupChats, getGroupInfo, getPinnedMessages, getMessageResponses, createGroupChat, renameGroup, setMember, leaveGroup,
-    searchMessages, getSharedFiles,
+    searchMessages, getSharedFiles, readAttachment,
     whoAmI, listChats, findChats, getChatMembers, getMessages, getMessage, getUnread, getMyRecentMessages, getMentions,
     sendMessage, replyToMessage, editMessage, deleteMessage, react, markRead,
   };

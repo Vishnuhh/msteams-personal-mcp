@@ -5,6 +5,23 @@ What changed in each release. Newest first. The server shows this page at `/chan
 Format: every release has a `## [version] - date` heading, one summary line, and short bullets under
 Added, Changed, Fixed or Security. A release cannot be deployed without its entry (`npm test` checks it).
 
+## [0.10.0] - 2026-10-26
+
+Read files and pictures shared in chats.
+
+### Added
+- `teams_read_file`: read a file or picture shared in a group or 1:1 chat. Word, Excel (as CSV), PowerPoint, notebooks, text, code and CSV come back as text; pictures are shown to the assistant. PDFs are read by the local server.
+- `teams_get_shared_files` now lists pictures too, can filter by file type, and gives each file a reference for `teams_read_file`.
+- `teams_download_file` (local server): save a shared file to Downloads/Teams. Programs and scripts are never saved.
+- An optional organisation logo on the home page for self-hosted servers (`BRAND_LOGO`, `BRAND_NAME`, `BRAND_URL`).
+
+### Security
+- Files are read with your own sign-in, only from chats you are in, and nothing is copied or kept on the server. Size limits apply (15 MB to read, 100 MB to download locally).
+- The sign-in page and home page now say that Claude can read files and pictures shared in your chats.
+
+### Fixed
+- The home page no longer shows the invite button to people without an invite link.
+
 ## [0.9.0] - 2026-10-21
 
 Access for your team and invited people only.

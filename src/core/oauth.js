@@ -10,6 +10,7 @@
 export const CLIENT_ID = '8ec6bc83-69c8-4392-8f08-b3c986009232'; // Teams personal client
 const RESOURCE = 'https://api.spaces.skype.com';
 const SKYPE_SCOPE = 'service::api.fl.spaces.skype.com::MBI_SSL openid profile offline_access';
+const GRAPH_SCOPE = 'https://graph.microsoft.com/Files.ReadWrite';
 const AUTHZ_URL = 'https://teams.live.com/api/auth/v1.0/authz/consumer';
 const LOGIN_HOST = 'https://login.microsoftonline.com';
 export const USER_AGENT =
@@ -114,6 +115,23 @@ export async function exchangeForSkypeToken(refreshToken) {
     region: body.region ?? null,
     refreshToken: r.json.refresh_token || refreshToken,
   };
+}
+
+/**
+ * A Microsoft Graph token for reading files shared in chats (they live in the sender's OneDrive).
+ * Microsoft pre-authorises the Teams personal client for Files.ReadWrite only (Files.Read alone is refused),
+ * so the token is broader than reading needs: the tools only ever use it for files posted in the user's chats.
+ * Returns { token, expiresAt }. The refresh token is not rotated here (the skypetoken refresh keeps it fresh).
+ */
+export async function exchangeForGraphToken(refreshToken) {
+  const r = await postToken(`${LOGIN_HOST}/consumers/oauth2/v2.0/token`, {
+    client_id: CLIENT_ID,
+    grant_type: 'refresh_token',
+    refresh_token: refreshToken,
+    scope: GRAPH_SCOPE,
+  });
+  if (!r.ok || !r.json.access_token) throw new Error(`Could not get access to shared files (${r.status}) ${describe(r.json)}.`);
+  return { token: r.json.access_token, expiresAt: Date.now() + Number(r.json.expires_in || 3600) * 1000 };
 }
 
 /** Decodes the signed-in user's own id from the skypetoken (a JWT). */
