@@ -54,8 +54,12 @@ test('a refused write never reaches Teams', async () => {
 test('every tool is labelled, and labels match what the tool does', () => {
   const handlers = {};
   registerTeamsTools({ registerTool: (name, config) => { handlers[name] = config; } }, {});
-  assert.deepEqual(Object.keys(handlers).sort(), Object.keys(TOOL_KINDS).sort());
+  assert.deepEqual(Object.keys(handlers).sort(), [...Object.keys(TOOL_KINDS), 'teams_do', 'teams_query'].sort());
+  assert.equal(handlers.teams_query.annotations.readOnlyHint, true);
+  assert.equal(handlers.teams_do.annotations.readOnlyHint, false);
+  assert.equal(handlers.teams_do.annotations.destructiveHint, true, 'apps ask before every teams_do call');
   for (const [name, cfg] of Object.entries(handlers)) {
+    if (name === 'teams_query' || name === 'teams_do') continue;
     const kind = TOOL_KINDS[name];
     assert.equal(cfg.annotations.readOnlyHint, kind === 'read' || kind === 'heavy', name);
     if (kind === 'destructive') assert.equal(cfg.annotations.destructiveHint, true, name);

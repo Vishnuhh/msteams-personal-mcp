@@ -5,6 +5,20 @@ What changed in each release. Newest first. The server shows this page at `/chan
 Format: every release has a `## [version] - date` heading, one summary line, and short bullets under
 Added, Changed, Fixed or Security. A release cannot be deployed without its entry (`npm test` checks it).
 
+## [0.11.0] - 2026-10-26
+
+New features reach every connected app without reconnecting.
+
+### Added
+- `teams_query` and `teams_do`: run any Teams action by name (`action: "help"` lists them). New features arrive as actions, so they work in every connected app as soon as the server is updated, without reconnecting.
+- If your app still has an older tool list, Claude's answer includes a short note asking you to refresh the Teams connector (at most every 30 minutes, and never again once refreshed).
+
+### Changed
+- Files in messages show their index and how to read them, so the assistant reads them instead of guessing they're out of reach.
+
+### Security
+- `teams_do` is marked as making changes, so your app asks before every call; reading actions can't be run through it, and changes can't be run through `teams_query`. Arguments are checked strictly, and limits apply per action.
+
 ## [0.10.2] - 2026-10-26
 
 Real @Everyone in groups, and name mentions in 1:1 chats.

@@ -231,10 +231,10 @@ const SCRIPT = `
 
   function renderConnections(d) {
     var tb = clear($('conn'));
-    if (!d.connections.length) return empty(tb, 6, 'No connections yet.');
+    if (!d.connections.length) return empty(tb, 7, 'No connections yet.');
     d.connections.forEach(function (c) {
       var tr = el('tr');
-      [c.person || 'Unknown', c.app || 'Unknown (before v0.7.1)', when(c.createdAt), when(c.lastUsedAt), day(c.expiresAt)].forEach(function (v) { tr.appendChild(el('td', '', v)); });
+      [c.person || 'Unknown', c.app || 'Unknown (before v0.7.1)', when(c.createdAt), when(c.lastUsedAt), day(c.expiresAt), c.toolsUpToDate ? 'Up to date' : 'Needs refresh'].forEach(function (v) { tr.appendChild(el('td', '', v)); });
       var td = el('td'); var b = el('button', 'end', 'End connection'); b.type = 'button';
       b.addEventListener('click', async function () {
         if (!confirm('End this connection? The app using it will need to sign in again.')) return;
@@ -668,7 +668,7 @@ ${configured ? '' : `<div class="notset"><h1>Admin</h1><p>Admin sign-in is not s
 
     <section class="view" id="v-connections" hidden aria-labelledby="h-conn">
       <div class="head"><h1 id="h-conn">Connections</h1></div>
-      <div class="scroll"><table><thead><tr><th>Person</th><th>App</th><th>Created</th><th>Last used</th><th>Ends if unused by</th><th></th></tr></thead><tbody id="conn"></tbody></table></div>
+      <div class="scroll"><table><thead><tr><th>Person</th><th>App</th><th>Created</th><th>Last used</th><th>Ends if unused by</th><th>Tools</th><th></th></tr></thead><tbody id="conn"></tbody></table></div>
     </section>
 
     <section class="view" id="v-activity" hidden aria-labelledby="h-act">

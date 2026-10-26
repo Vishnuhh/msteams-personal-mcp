@@ -390,6 +390,19 @@ app also revokes it. You can also remove the app's access in your Microsoft acco
 | `teams_status` | Which account is signed in | ✓ | ✓ |
 | `teams_logout` | Disconnect. Remote: `everywhere=true` ends every connection of your account | ✓ | ✓ |
 | `teams_login` | Start device-code sign-in from inside the client | ✓ | (use the web page) |
+| `teams_query` | Run any read-only action by name, including newer ones without their own tool. `action: "help"` lists every action and its arguments | ✓ | ✓ |
+| `teams_do` | Run any action that changes Teams by name (your app asks before each one). New write features arrive here | ✓ | ✓ |
+
+### Staying up to date without reconnecting
+
+Apps (Claude, Cursor, VS Code) cache a server's tool list when they connect and don't reload it on their own.
+So the named tools above are kept stable, and new features arrive as **actions** behind `teams_query` (reading)
+and `teams_do` (changes): they work for every connected app the moment the server is updated.
+
+- If an update ever changes the named tools, the server notices which connections still have the old list and
+  adds a one-line note to Claude's answer asking the person to refresh the connector (Disconnect, then Connect).
+- For developers: add new features with `action(...)` in `src/core/tools.js`, not `reg(...)`. Changing a named tool
+  means bumping `TOOLS_VERSION` (a test reminds you).
 
 ### Prompts (one-click workflows)
 

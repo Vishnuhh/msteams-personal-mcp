@@ -7,6 +7,7 @@
 import { hmacHex, safeEqual } from './crypto.js';
 import { buildInsights, buildAlerts, personCsv, dayOf } from './usage.js';
 import { cloudUsage } from './cloud.js';
+import { TOOLS_VERSION } from '../core/tools.js';
 
 const SESSION_HOURS = 8;
 const COOKIE = 'tpm_admin';
@@ -72,7 +73,7 @@ const KEY_RE = /^([0-9a-f]{16,64}|conn:[0-9a-f]{64})$/;
 
 async function loadConnections(env, inactiveDays) {
   const rows = (await env.DB.prepare(
-    `SELECT id, account_name, app_name, account_hash, created_at, COALESCE(last_used_at, created_at) AS last_used FROM users ORDER BY last_used DESC`,
+    `SELECT id, account_name, app_name, account_hash, created_at, tools_version, COALESCE(last_used_at, created_at) AS last_used FROM users ORDER BY last_used DESC`,
   ).all()).results || [];
   return rows.map((c) => ({
     id: c.id,
@@ -82,6 +83,7 @@ async function loadConnections(env, inactiveDays) {
     createdAt: new Date(c.created_at).toISOString(),
     lastUsedAt: new Date(c.last_used).toISOString(),
     expiresAt: new Date(c.last_used + inactiveDays * DAY_MS).toISOString(),
+    toolsUpToDate: (c.tools_version ?? 0) >= TOOLS_VERSION,
   }));
 }
 
@@ -114,6 +116,8 @@ export async function overview(env, { version, settings, inactiveDays, dailyCap 
   const todayTotals = insights.daily[insights.daily.length - 1];
   const alerts = buildAlerts({ insights, cloud: cloud?.configured && !cloud.error ? cloud : null, failedAdminSignInsToday: failedAdminToday });
   if (access.waiting) alerts.unshift({ level: 'warn', text: `${access.waiting} ${access.waiting === 1 ? 'person is' : 'people are'} waiting for an access decision. See Access.` });
+  const oldTools = connections.filter((c) => !c.toolsUpToDate).length;
+  if (oldTools) alerts.push({ level: 'warn', text: `${oldTools} connection${oldTools === 1 ? ' has' : 's have'} an older tool list. Claude shows those people a note to refresh the connector.` });
   if (!access.restricted) alerts.push({ level: 'warn', text: 'Access is open: any personal Microsoft account can connect. Restrict it under Access.' });
   return {
     version,

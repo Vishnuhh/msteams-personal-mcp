@@ -31,7 +31,7 @@ import { CfWorkerJsonSchemaValidator } from '@modelcontextprotocol/sdk/validatio
 import { z } from 'zod';
 import { requestDeviceCode, pollDeviceCode, exchangeForSkypeToken, exchangeForGraphToken, selfMri } from './core/oauth.js';
 import { createTeamsClient } from './core/teams.js';
-import { registerTeamsTools, registerTeamsPrompts, wrap } from './core/tools.js';
+import { registerTeamsTools, registerTeamsPrompts, wrap, TOOLS_VERSION } from './core/tools.js';
 import { newSecret, sha256Hex, sha256B64, sealJson, openJson, safeEqual } from './remote/crypto.js';
 import { renderPage } from './remote/page.js';
 import { renderAuthorizePage, renderAuthorizeError } from './remote/authorize-page.js';
@@ -66,6 +66,12 @@ const skypeCache = new Map();
 // Per-isolate cache of Microsoft Graph tokens (reading files shared in chats), keyed by user row id.
 // Every request re-checks the connection in D1 first, so a revoked connection can't use a cached token.
 const graphCache = new Map();
+// When each connection last saw the "refresh the connector" note (per isolate), so it shows at most every 30 minutes.
+const noticeShown = new Map();
+const NOTICE_EVERY_MS = 30 * 60 * 1000;
+const REFRESH_NOTE = 'Note for the user (mention it once, briefly): the Teams connector has new features since it was connected. ' +
+  'To get them, refresh it in Claude: Settings > Connectors > Teams > Disconnect, then Connect (or "Refresh tools" if that menu has it). ' +
+  'Everything keeps working until then; newer features are also reachable now through teams_query and teams_do.';
 
 const json = (data, status = 200, headers = {}) =>
   new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...headers } });
@@ -327,7 +333,7 @@ async function handleMcp(request, env, url, ctx) {
   if (!/^tpm_[A-Za-z0-9_-]{20,}$/.test(accessKey)) return unauthorized(url, 'Invalid access token. Sign in again.', 'invalid_token');
   const userId = await sha256Hex(accessKey);
   const row = await env.DB.prepare(
-    'SELECT u.created_at, u.last_used_at, u.account_hash, u.account_name, a.status AS access_status, a.checked_day AS access_checked ' +
+    'SELECT u.created_at, u.last_used_at, u.account_hash, u.account_name, u.tools_version, a.status AS access_status, a.checked_day AS access_checked ' +
     'FROM users u LEFT JOIN access_people a ON a.account_hash = u.account_hash WHERE u.id = ?',
   ).bind(userId).first();
   if (!row) return unauthorized(url, `This connection was revoked or has expired. Sign in again${found.via === 'path' ? ` at ${signInUrl}` : ''}.`, 'invalid_token');
@@ -412,8 +418,23 @@ async function handleMcp(request, env, url, ctx) {
   }));
 
   const guard = toolGuard(env, userId, { onLimited: (m) => stat(env, ctx, m), ...(capRow ? { cap: capRow.daily_writes } : {}) });
+
+  // Apps cache the tool list. Remember which version this connection loaded, and if it's older than the server's,
+  // add a short "refresh the connector" note to a tool result (at most every 30 minutes per connection).
+  const rpc = await request.clone().json().catch(() => null);
+  const listsTools = (Array.isArray(rpc) ? rpc : [rpc]).some((m) => m?.method === 'tools/list');
+  if (listsTools && row.tools_version !== TOOLS_VERSION) {
+    ctx.waitUntil(env.DB.prepare('UPDATE users SET tools_version = ? WHERE id = ?').bind(TOOLS_VERSION, userId).run().catch(() => {}));
+  }
+  const outdated = !listsTools && (row.tools_version ?? 0) < TOOLS_VERSION;
+  const notice = () => {
+    if (!outdated || now - (noticeShown.get(userId) || 0) < NOTICE_EVERY_MS) return null;
+    noticeShown.set(userId, now);
+    return REFRESH_NOTE;
+  };
   registerTeamsTools(server, client, {
     readPdf: (bytes) => readPdf(env, bytes),
+    notice,
     beforeCall: guard,
     afterCall: (name, kind, info) => usage.tool(name, kind, info),
   });

@@ -462,11 +462,14 @@ export function createTeamsClient(getSkypeToken, hooks = {}) {
     }
     const files = parseJsonish(m.properties?.files);
     if (Array.isArray(files) && files.length) {
-      out.files = files.map((f) => ({
+      // index = the attachment index teams_read_file takes (files come first, in this order).
+      out.files = files.map((f, index) => ({
         name: f.fileName || f.title || null,
         type: f.fileType || f.type || null,
+        index,
         url: f.fileInfo?.shareUrl || f.objectUrl || f.fileInfo?.fileUrl || f.baseUrl || null,
       }));
+      out.readFiles = 'Use teams_read_file (or teams_query action "read_file") with this message id and the file index to read them.';
     }
     const links = parseJsonish(m.properties?.links);
     if (Array.isArray(links) && links.length) {
