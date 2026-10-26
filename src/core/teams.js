@@ -17,7 +17,6 @@ const MAX_TITLE_LOOKUPS = 20;
 const contactsCache = new Map(); // selfMri -> { at, names: Map<mri, displayName> }
 const convCache = new Map(); // `${selfMri}|${limit}` -> { at, list } (short TTL; spares Teams on bursts of tool calls)
 const CONV_TTL_MS = 20 * 1000;
-const MAX_EVERYONE = 25; // @everyone is spelled out as individual mentions; keep it to small groups
 const selfNameCache = new Map(); // selfMri -> the user's own display name
 // "<selfMri>|<1:1 conversationId>" -> other member's mri. Keyed per user: on the shared server both
 // people in a 1:1 chat may be users, and each must see the *other* person.
@@ -162,22 +161,29 @@ export function formatInline(text) {
 /**
  * Turns plain text into Teams message HTML:
  *   - "@[Display Name](8:live:…)" becomes a real @mention (returned in `mentions` for properties.mentions)
+ *   - with { everyone: conversationId }, "@[Everyone](everyone)" becomes Teams' @Everyone (notifies the whole group);
+ *     without it the token stays plain text, so message text alone can never notify a whole group
  *   - blank lines separate paragraphs (with a visible gap, as the Teams client does)
  *   - a paragraph whose lines all start with "- " becomes a bulleted list
  *   - `code`, **bold** and https:// links are formatted inline
  */
-export function buildContent(text) {
+export function buildContent(text, { everyone = null } = {}) {
   const mentions = [];
-  const re = /@\[([^\]]+)\]\(((?:8|28):[^)\s]+)\)/g;
+  const re = /@\[([^\]]+)\]\(((?:8|28):[^)\s]+|everyone)\)/g;
   const line = (src) => {
     let out = '';
     let last = 0;
     for (const m of src.matchAll(re)) {
+      if (m[2] === 'everyone' && !everyone) continue; // stays plain text
       out += formatInline(src.slice(last, m.index));
       const itemid = String(mentions.length);
-      mentions.push({ '@type': 'http://schema.skype.com/Mention', itemid, mri: m[2], mentionType: 'person', displayName: m[1] });
+      const all = m[2] === 'everyone';
+      const name = all ? 'Everyone' : m[1];
+      mentions.push(all
+        ? { '@type': 'http://schema.skype.com/Mention', itemid, mri: everyone, mentionType: 'everyone', displayName: name }
+        : { '@type': 'http://schema.skype.com/Mention', itemid, mri: m[2], mentionType: 'person', displayName: name });
       out += `<readonly class="skipProofing" itemtype="http://schema.skype.com/Mention" contenteditable="false" spellcheck="false">` +
-        `<span itemtype="http://schema.skype.com/Mention" itemscope itemid="${itemid}">${escapeHtml(m[1])}</span></readonly>`;
+        `<span itemtype="http://schema.skype.com/Mention" itemscope itemid="${itemid}">${escapeHtml(name)}</span></readonly>`;
       last = m.index + m[0].length;
     }
     return out + formatInline(src.slice(last));
@@ -536,17 +542,47 @@ export function createTeamsClient(getSkypeToken, hooks = {}) {
 
   // ------------------------------------------------------------------ actions
 
-  /** "@[A](8:a) @[B](8:b) " for every other member of a small group (Teams personal has no @everyone tag). */
-  async function everyoneMentions(conversationId) {
-    const members = (await getChatMembers(conversationId)).filter((m) => !m.isMe);
-    if (!members.length) throw new Error('Nobody else is in this chat to mention.');
-    if (members.length > MAX_EVERYONE) throw new Error(`This group has ${members.length} other members; mentioning everyone is limited to ${MAX_EVERYONE}. Mention people individually instead.`);
-    return members.map((m) => m.mentionAs).join(' ') + ' ';
+  const isGroup = (id) => /^19:/.test(id) && !/^19:uni01_/.test(id) && !/^19:stream01_/.test(id);
+  const isOneOnOne = (id) => /^19:uni01_/.test(id) || /^(8|28):/.test(id);
+
+  /** Teams' @Everyone at the start of the text (group chats only). */
+  function withEveryone(conversationId, text) {
+    if (!isGroup(conversationId)) throw new Error('@Everyone only works in group chats. In a 1:1 chat, the other person is mentioned by name.');
+    return /@\[Everyone\]\(everyone\)/i.test(text) ? text : `@[Everyone](everyone) ${text}`;
   }
 
-  async function sendMessage(conversationId, text, { displayName, mentionEveryone = false } = {}) {
-    if (mentionEveryone) text = (await everyoneMentions(conversationId)) + text;
-    const { html, mentions } = buildContent(text);
+  /**
+   * In a 1:1 chat, the other person's name written as plain text becomes a real @mention (first occurrence;
+   * full name first, then first name). Text that already has a mention is left as it is.
+   */
+  async function mentionPartner(conversationId, text) {
+    if (!isOneOnOne(conversationId) || /@\[[^\]]+\]\((?:8|28):/.test(text)) return text;
+    const self = await me();
+    const partner = await partnerOf(conversationId, self).catch(() => null);
+    if (!partner || partner === self) return text;
+    let name = (await contactNames().catch(() => new Map())).get(partner);
+    if (!name) name = (await getChatMembers(conversationId).catch(() => [])).find((m) => m.mri === partner)?.name;
+    if (!name || looksLikeId(name) || /[[\]()]/.test(name)) return text;
+    const candidates = [name.trim(), name.trim().split(/\s+/)[0]].filter((n, i, all) => n.length >= 3 && all.indexOf(n) === i);
+    for (const n of candidates) {
+      const m = text.match(new RegExp(`(^|[^\\p{L}\\p{N}@\\[])(${n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})(?![\\p{L}\\p{N}])`, 'iu'));
+      if (m) {
+        const at = m.index + m[1].length;
+        return `${text.slice(0, at)}@[${m[2]}](${partner})${text.slice(at + m[2].length)}`;
+      }
+    }
+    return text;
+  }
+
+  async function prepareText(conversationId, text, { mentionEveryone, mentionRecipient }) {
+    if (mentionEveryone) text = withEveryone(conversationId, text);
+    if (mentionRecipient) text = await mentionPartner(conversationId, text);
+    return text;
+  }
+
+  async function sendMessage(conversationId, text, { displayName, mentionEveryone = false, mentionRecipient = true } = {}) {
+    text = await prepareText(conversationId, text, { mentionEveryone, mentionRecipient });
+    const { html, mentions } = buildContent(text, { everyone: mentionEveryone ? conversationId : null });
     const clientmessageid = randomDigits();
     const body = { clientmessageid, content: html, messagetype: 'RichText/Html', contenttype: 'text', imdisplayname: displayName || await selfName() };
     if (mentions.length) body.properties = { mentions: JSON.stringify(mentions) };
@@ -600,7 +636,8 @@ export function createTeamsClient(getSkypeToken, hooks = {}) {
     return formatMessage(m, self, names);
   }
 
-  async function replyToMessage(conversationId, messageId, text) {
+  async function replyToMessage(conversationId, messageId, text, { mentionEveryone = false, mentionRecipient = true } = {}) {
+    text = await prepareText(conversationId, text, { mentionEveryone, mentionRecipient });
     const [self, names, original] = await Promise.all([me(), contactNames().catch(() => new Map()), rawMessage(conversationId, messageId)]);
     const author = mriFromUrl(original.from);
     const authorName = (original.imdisplayname && !looksLikeId(original.imdisplayname) ? original.imdisplayname : null)
@@ -611,7 +648,7 @@ export function createTeamsClient(getSkypeToken, hooks = {}) {
       `<strong itemprop="mri" itemid="${escapeHtml(author)}">${escapeHtml(authorName)}</strong>` +
       `<span itemprop="time" itemid="${escapeHtml(String(original.id))}"></span>` +
       `<p itemprop="preview">${escapeHtml(preview)}</p></blockquote>`;
-    const { html, mentions } = buildContent(text);
+    const { html, mentions } = buildContent(text, { everyone: mentionEveryone ? conversationId : null });
     const clientmessageid = randomDigits();
     const properties = {
       qtdMsgs: JSON.stringify([{ messageId: String(original.id), sender: author, time: messageTimeMs(original) }]),

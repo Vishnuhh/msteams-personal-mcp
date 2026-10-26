@@ -215,23 +215,27 @@ export function registerTeamsTools(server, client, { beforeCall, afterCall, read
   reg('teams_send_message', {
     description: 'SEND a message to a Teams personal conversation as the signed-in user. Only call when the user explicitly asked to send this exact text. ' +
       'To @mention someone (they get notified), write @[Display Name](mri) using the "mentionAs" value from teams_get_chat_members. ' +
-      'mentionEveryone=true mentions every member of a group (up to 25): only when the user asked to notify everyone.',
+      'In a 1:1 chat, the other person\'s name in the text is turned into a real @mention automatically. ' +
+      'mentionEveryone=true adds Teams\' @Everyone, which notifies the whole group in one mention (group chats only): use it only when the user asked to tag or notify everyone.',
     inputSchema: {
       conversationId: z.string().min(1),
       text: z.string().min(1).describe('Blank lines separate paragraphs; lines starting with "- " become a bulleted list; **bold**, `code` and https:// links are formatted; @[Name](mri) becomes a mention'),
-      mentionEveryone: z.boolean().optional().describe('Mention all other group members (notifies each of them)'),
+      mentionEveryone: z.boolean().optional().describe('Add @Everyone: notifies every member of the group (group chats only)'),
+      mentionRecipient: z.boolean().optional().describe('1:1 chats: turn the other person\'s name into an @mention (default true)'),
     },
-  }, wrap(({ conversationId, text, mentionEveryone }) => client.sendMessage(conversationId, text, { mentionEveryone })));
+  }, wrap(({ conversationId, text, mentionEveryone, mentionRecipient }) => client.sendMessage(conversationId, text, { mentionEveryone, mentionRecipient })));
 
   reg('teams_reply_to_message', {
     description: 'SEND a reply that quotes a specific message (shows as a Teams reply). Only when the user explicitly asked to reply with this text. ' +
-      'Supports @[Name](mri) mentions like teams_send_message.',
+      'Supports @[Name](mri) mentions, @Everyone (mentionEveryone) and automatic 1:1 name mentions like teams_send_message.',
     inputSchema: {
       conversationId: z.string().min(1),
       messageId: z.string().min(1).describe('The message being replied to'),
       text: z.string().min(1),
+      mentionEveryone: z.boolean().optional().describe('Add @Everyone: notifies every member of the group (group chats only)'),
+      mentionRecipient: z.boolean().optional().describe('1:1 chats: turn the other person\'s name into an @mention (default true)'),
     },
-  }, wrap(({ conversationId, messageId, text }) => client.replyToMessage(conversationId, messageId, text)));
+  }, wrap(({ conversationId, messageId, text, mentionEveryone, mentionRecipient }) => client.replyToMessage(conversationId, messageId, text, { mentionEveryone, mentionRecipient })));
 
   reg('teams_edit_message', {
     description: 'Edit one of the signed-in user\'s own messages, replacing its text (visible to the chat as edited). Only when the user asked. Replies keep their quote.',

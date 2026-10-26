@@ -379,7 +379,7 @@ app also revokes it. You can also remove the app's access in your Microsoft acco
 | `teams_mark_read` | Mark a chat as read (up to a message, or the newest) | ✓ | ✓ |
 | `teams_list_reaction_emojis` | Reaction emojis Teams accepts, with meanings, so the assistant can suggest one | ✓ | ✓ |
 | `teams_add_reaction` / `teams_remove_reaction` | React to a message (👍 ❤️ 😆 🙌 🔥 👀 ✔️ …) or remove your reaction | ✓ | ✓ |
-| `teams_send_message` | Send a message, only when you explicitly ask. `@[Name](id)` becomes a real @mention | ✓ | ✓ |
+| `teams_send_message` | Send a message, only when you explicitly ask. `@[Name](id)` becomes a real @mention; in a 1:1 chat the other person's name is mentioned automatically; `mentionEveryone` adds Teams' **@Everyone** (group chats) | ✓ | ✓ |
 | `teams_reply_to_message` | Reply quoting a specific message (shows as a Teams reply), with @mentions | ✓ | ✓ |
 | `teams_edit_message` / `teams_delete_message` | Edit or delete your own messages (others' messages are refused) | ✓ | ✓ |
 | `teams_get_group_info` | A group at a glance: members, admins, creator, pinned messages | ✓ | ✓ |

@@ -5,6 +5,17 @@ What changed in each release. Newest first. The server shows this page at `/chan
 Format: every release has a `## [version] - date` heading, one summary line, and short bullets under
 Added, Changed, Fixed or Security. A release cannot be deployed without its entry (`npm test` checks it).
 
+## [0.10.2] - 2026-10-26
+
+Real @Everyone in groups, and name mentions in 1:1 chats.
+
+### Changed
+- Tagging everyone in a group now uses Teams' own **@Everyone**: one mention that notifies the whole group, with no size limit (it used to mention up to 25 people one by one).
+- In a 1:1 chat, the other person's name in a message or reply becomes a real @mention, so they get notified. It can be switched off per message.
+
+### Security
+- @Everyone is only added when the tag-everyone option is set (your app asks before sending); text in a message can never notify a whole group on its own.
+
 ## [0.10.1] - 2026-10-26
 
 PDFs can be read on the remote server too.
