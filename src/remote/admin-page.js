@@ -1390,6 +1390,10 @@ const SCRIPT = `
     $('sCodeRemove').hidden = !s.accessCodeRequired || s.accessCodeFrom === 'variable';
     $('sCodeReset').hidden = s.accessCodeFrom !== 'admin';
     text($('sHookState'), s.alertWebhook ? 'Sending to ' + s.alertWebhook : 'Off');
+    var mail = s.mail || {};
+    text($('mailState'), mail.configured ? 'Sent to ' + mail.to + ' from ' + mail.from + '.' : 'Not set up on this server. Add the ALERT_EMAIL send_email binding and its variables (see wrangler.toml).');
+    $('mailForm').hidden = !mail.configured; $('mailTest').hidden = !mail.configured;
+    $('sMailLimits').checked = s.mailLimits; $('sMailDaily').checked = s.mailDaily;
     $('sHookRemove').hidden = !s.alertWebhook;
     var d = state.data;
     if (d) {
@@ -1429,6 +1433,13 @@ const SCRIPT = `
       if (!/^https:[/][/][^ /]+[.][^ /]+[/]/.test(u)) return fieldError($('sHook'), $('sHookMsg'), 'Enter an https:// address, for example https://hooks.slack.com/services/...');
       fieldOk($('sHook'), $('sHookMsg'));
       if (await saveSettings($('sHookSave'), { alertWebhook: u }, 'Alert webhook saved. Alerts are sent once a night.')) $('sHook').value = '';
+    });
+    $('mailForm').addEventListener('submit', function (e) {
+      e.preventDefault();
+      saveSettings($('mailSave'), { mailLimits: $('sMailLimits').checked, mailDaily: $('sMailDaily').checked }, 'Email alert settings saved.');
+    });
+    $('mailTest').addEventListener('click', function () {
+      act(this, function () { return post('/admin/api/settings/test-email'); }, 'Test email sent. It can take a minute to arrive.', 'Sending');
     });
     $('sHookRemove').addEventListener('click', async function () { if (await confirmDialog('Stop sending alerts?', 'The nightly alert message stops.', 'Remove', true)) saveSettings(this, { alertWebhook: '' }, 'Alert webhook removed.'); });
 
@@ -1706,6 +1717,14 @@ ${configured ? '' : `<div class="center" id="notset" hidden><div class="signin">
               <label class="field" for="sDays">End connections unused for (days)<input class="input" id="sDays" inputmode="numeric"><span class="hint">7 to 365.</span></label>
             </div>
             <div class="inline"><button class="btn" type="submit" id="sSave">Save</button><p class="msg-err" id="sMsg" role="alert"></p></div>
+          </form>
+        </section>
+        <section class="panel"><div class="panelhead"><h2>Email alerts</h2><button class="btn quiet small" type="button" id="mailTest" hidden>Send test email</button></div>
+          <p class="muted" id="mailState"></p>
+          <form class="form" id="mailForm" novalidate hidden style="margin-top:14px">
+            <label class="toggle"><input type="checkbox" class="check" id="sMailLimits"><span><b>Free-plan limit warnings</b><span>Checked every hour. One email when a Cloudflare free-plan limit passes 80%, and one more if it reaches 100%.</span></span></label>
+            <label class="toggle"><input type="checkbox" class="check" id="sMailDaily"><span><b>Daily usage summary</b><span>Every morning at 03:17 UTC: the previous day's requests, tool calls and errors, open alerts and the free-plan meters.</span></span></label>
+            <div class="inline"><button class="btn quiet" type="submit" id="mailSave">Save</button></div>
           </form>
         </section>
         <div class="grid2">

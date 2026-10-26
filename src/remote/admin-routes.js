@@ -14,6 +14,7 @@ import {
 import { adminTeamsInfo, teamsStatus, startLink, pollLink, unlink, myGroups, adminMembership } from './admin-teams.js';
 import { issuesReport } from './diagnostics.js';
 import { serverSettings, settingsView, updateSettings, resetSetting } from './settings.js';
+import { sendTestEmail } from './alert-mail.js';
 
 const json = (data, status = 200, headers = {}) =>
   new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...headers } });
@@ -164,6 +165,11 @@ export async function handleAdmin(request, env, url, ctx, deps) {
     const r = await updateSettings(request, env);
     if (ok(r.response)) log('settings changed', null, r.changes.join(', '));
     return r.response;
+  }
+  if (path === '/admin/api/settings/test-email') {
+    const r = await sendTestEmail(env);
+    if (r.ok) log('test email sent', env.ALERT_EMAIL_TO);
+    return json(r.ok ? { ok: true, to: env.ALERT_EMAIL_TO } : { error: r.error }, r.ok ? 200 : 400);
   }
   if (path === '/admin/api/settings/reset') { const b = await body(); const r = await resetSetting(env, b.key); if (ok(r)) log('setting reset to default', b.key); return r; }
   if (path === '/admin/api/security/2fa/start') return startTwoFactor(env);

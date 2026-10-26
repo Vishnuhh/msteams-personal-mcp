@@ -7,6 +7,8 @@
 //   daily change cap     200                            daily_cap
 //   unused connections   90 days                        inactive_days
 //   alert webhook        ALERT_WEBHOOK_URL              alert_webhook
+//   limit emails         on (needs the ALERT_EMAIL binding) mail_limits
+//   daily summary email  on (needs the ALERT_EMAIL binding) mail_daily
 //   allow-list           ALLOWED_ACCOUNTS               (variable only)
 import { hmacHex, safeEqual } from './crypto.js';
 
@@ -24,7 +26,7 @@ const codeHash = (env, code) => hmacHex(env.KEY_SALT || 'msteams-personal-mcp', 
 export async function serverSettings(env) {
   const hit = cache.get(env.DB);
   if (hit && Date.now() - hit.at < TTL_MS) return hit.value;
-  const rows = (await env.DB.prepare("SELECT key, value FROM access_settings WHERE key IN ('personal_urls', 'connection_alerts', 'access_code', 'daily_cap', 'inactive_days', 'alert_webhook')").all().catch(() => ({ results: [] }))).results || [];
+  const rows = (await env.DB.prepare("SELECT key, value FROM access_settings WHERE key IN ('personal_urls', 'connection_alerts', 'access_code', 'daily_cap', 'inactive_days', 'alert_webhook', 'mail_limits', 'mail_daily')").all().catch(() => ({ results: [] }))).results || [];
   const o = Object.fromEntries(rows.map((r) => [r.key, r.value]));
   const has = (k) => Object.prototype.hasOwnProperty.call(o, k);
   const value = {
@@ -37,6 +39,9 @@ export async function serverSettings(env) {
     inactiveDays: has('inactive_days') ? Number(o.inactive_days) : DEFAULT_INACTIVE_DAYS,
     alertWebhook: has('alert_webhook') ? o.alert_webhook || null : env.ALERT_WEBHOOK_URL || null,
     allowList: String(env.ALLOWED_ACCOUNTS || '').split(/[\s,]+/).filter(Boolean),
+    mailLimits: has('mail_limits') ? o.mail_limits === '1' : true,
+    mailDaily: has('mail_daily') ? o.mail_daily === '1' : true,
+    mail: { configured: Boolean(env.ALERT_EMAIL && env.ALERT_EMAIL_FROM && env.ALERT_EMAIL_TO), to: env.ALERT_EMAIL_TO || null, from: env.ALERT_EMAIL_FROM || null },
   };
   cache.set(env.DB, { at: Date.now(), value });
   return value;
@@ -57,6 +62,7 @@ export function settingsView(s) {
     personalUrls: s.personalUrls, alerts: s.alerts, accessCodeRequired: s.accessCodeRequired, accessCodeFrom: s.accessCodeFrom,
     dailyCap: s.dailyCap, inactiveDays: s.inactiveDays, alertWebhook: s.alertWebhook ? s.alertWebhook.replace(/^(https:\/\/[^/]+).*/, '$1/…') : null,
     allowListSize: s.allowList.length,
+    mailLimits: s.mailLimits, mailDaily: s.mailDaily, mail: s.mail,
   };
 }
 
@@ -86,6 +92,8 @@ export async function updateSettings(request, env) {
     if (u && !/^https:\/\/[^\s/]+\.[^\s/]+\/\S*$/.test(u)) return fail('The alert webhook must be an https:// address.');
     set.push(['alert_webhook', u]); changes.push(u ? 'alert webhook set' : 'alert webhook removed');
   }
+  if ('mailLimits' in body) { if (typeof body.mailLimits !== 'boolean') return fail('Limit emails must be on or off.'); set.push(['mail_limits', body.mailLimits ? '1' : '0']); changes.push(`limit emails ${body.mailLimits ? 'on' : 'off'}`); }
+  if ('mailDaily' in body) { if (typeof body.mailDaily !== 'boolean') return fail('The daily summary must be on or off.'); set.push(['mail_daily', body.mailDaily ? '1' : '0']); changes.push(`daily summary email ${body.mailDaily ? 'on' : 'off'}`); }
   if ('accessCode' in body) {
     const c = body.accessCode === null ? '' : String(body.accessCode || '').trim();
     if (c && (c.length < 6 || c.length > 64)) return fail('The access code must be 6 to 64 characters.');
@@ -99,7 +107,7 @@ export async function updateSettings(request, env) {
 
 /** Removes an admin-page override so the Cloudflare variable (or the default) applies again. */
 export async function resetSetting(env, key) {
-  const map = { personalUrls: 'personal_urls', alerts: 'connection_alerts', accessCode: 'access_code', dailyCap: 'daily_cap', inactiveDays: 'inactive_days', alertWebhook: 'alert_webhook' };
+  const map = { personalUrls: 'personal_urls', alerts: 'connection_alerts', accessCode: 'access_code', dailyCap: 'daily_cap', inactiveDays: 'inactive_days', alertWebhook: 'alert_webhook', mailLimits: 'mail_limits', mailDaily: 'mail_daily' };
   if (!map[key]) return json({ error: 'Unknown setting.' }, 400);
   await env.DB.prepare('DELETE FROM access_settings WHERE key = ?').bind(map[key]).run();
   forgetSettings(env);

@@ -242,6 +242,17 @@ how long unused connections last and the alert webhook; its values win over the 
 Connections unused for 90 days (or the number set in Settings) end automatically; a nightly job (cron in
 `wrangler.toml`) removes stale data.
 
+**Alert emails (free).** The server can email the admin when a Cloudflare free-plan limit passes 80% or reaches
+100% (checked hourly) and send a daily usage summary, as formatted HTML. It uses Cloudflare Email Routing, which
+is free on every plan for mail sent to your own verified address:
+
+1. Cloudflare dashboard → your domain → **Email Routing**: turn it on (it replaces the domain's MX records) and
+   add your address under **Destination addresses**; click the link Cloudflare emails you.
+2. In `wrangler.toml`, add the binding and variables (an example is commented out there):
+   `[[send_email]] name = "ALERT_EMAIL"` with `destination_address = "you@example.com"`, plus `ALERT_EMAIL_FROM`
+   (an address on that domain), `ALERT_EMAIL_TO`, `PUBLIC_URL` and optionally `ALERT_TIMEZONE`.
+3. Deploy, then use **Settings → Email alerts → Send test email**. Both kinds can be switched off there.
+
 **Admin sign-in security.** Sessions are stored on the server: they end after 30 minutes without use, after
 8 hours, at sign-out, or when the admin password changes. **Settings → Security** turns on two-factor sign-in
 (any authenticator app), lists signed-in sessions and signs out everywhere else. **Settings → Audit log** lists

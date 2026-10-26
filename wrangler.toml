@@ -84,9 +84,17 @@ name = "ADMIN_LOGIN_LIMITER"
 namespace_id = "1009"
 simple = { limit = 10, period = 60 }
 
-# Nightly cleanup of unused connections, apps and expired codes.
+# Nightly cleanup of unused connections, apps and expired codes, and the daily summary email; hourly free-plan
+# limit check (see HOURLY_CRON in src/worker.js).
 [triggers]
-crons = ["17 3 * * *"]
+crons = ["17 3 * * *", "7 * * * *"]
+
+# Optional alert emails to the admin (free with Cloudflare Email Routing; see src/remote/alert-mail.js):
+# [[send_email]]
+# name = "ALERT_EMAIL"
+# destination_address = "you@example.com"
+# and in [vars]: ALERT_EMAIL_FROM = "alerts@yourdomain.com", ALERT_EMAIL_TO = "you@example.com",
+# PUBLIC_URL = "https://teams-mcp.yourdomain.com", ALERT_TIMEZONE = "UTC"
 
 [observability]
 enabled = false

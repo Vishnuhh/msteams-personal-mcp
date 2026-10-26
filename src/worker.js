@@ -43,6 +43,7 @@ import { adminConfigured, auditCleanup } from './remote/admin-auth.js';
 import { overview as adminOverview } from './remote/admin.js';
 import { handleAdmin } from './remote/admin-routes.js';
 import { serverSettings, settingsView, accessCodeOk } from './remote/settings.js';
+import { checkLimits, sendDailySummary } from './remote/alert-mail.js';
 import { usageRecorder } from './remote/usage.js';
 import { readPdfLite, looksReadable, markdownPdfBody } from './core/pdf.js';
 import { eventStatements, recordEvent, cleanupStatement } from './remote/diagnostics.js';
@@ -88,6 +89,9 @@ function stat(env, ctx, metric) {
 }
 
 // ---------------------------------------------------------------- pages (CSP with script hashes)
+
+// Must match the hourly entry in wrangler.toml [triggers] crons; the other entry is the nightly job.
+const HOURLY_CRON = '7 * * * *';
 
 const scriptHashes = new Map();
 async function html(body, status = 200, { fonts = true } = {}) {
@@ -577,12 +581,17 @@ export default {
   },
 
   async scheduled(event, env, ctx) {
+    // Hourly (wrangler.toml crons): email the admin when a Cloudflare free-plan limit passes 80% or reaches 100%.
+    if (event.cron === HOURLY_CRON) {
+      ctx.waitUntil((async () => checkLimits(env, { enabled: (await serverSettings(env)).mailLimits }))().catch(() => {}));
+      return;
+    }
     ctx.waitUntil(cleanup(env));
-    // Optional: send the dashboard's alerts to a webhook (Slack, Discord, ntfy, ...). The server cannot post to Teams:
-    // every Teams sign-in is encrypted with its owner's own key.
+    // Nightly: the daily summary email, and the dashboard's alerts to a webhook (Slack, Discord, ntfy, ...).
+    // The server cannot post to Teams: every Teams sign-in is encrypted with its owner's own key.
     ctx.waitUntil((async () => {
       const s = await serverSettings(env);
-      if (!s.alertWebhook) return;
+      if (!s.alertWebhook && !s.mailDaily) return;
       const mode = await modeOf(env);
       const counts = await accessCounts(env, mode);
       const o = await adminOverview(env, {
@@ -590,7 +599,8 @@ export default {
         settings: { ...settingsView(s), restricted: mode.restricted, dailyCap: s.dailyCap, inactiveDays: s.inactiveDays },
         access: { restricted: mode.restricted, waiting: counts.requests + counts.review },
       });
-      if (!o.alerts.length) return;
+      await sendDailySummary(env, o, { enabled: s.mailDaily }).catch(() => {});
+      if (!s.alertWebhook || !o.alerts.length) return;
       const text = `Teams Personal MCP: ${o.alerts.length} alert(s)\n` + o.alerts.map((a) => `- ${a.text}`).join('\n');
       await fetch(s.alertWebhook, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, content: text }) });
     })().catch(() => {}));

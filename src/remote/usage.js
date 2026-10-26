@@ -187,7 +187,7 @@ export function buildAlerts({ insights, cloud, failedAdminSignInsToday = 0 }) {
   }
   if (failedAdminSignInsToday >= 3) alerts.push({ level: 'bad', text: `${failedAdminSignInsToday} failed admin sign-ins today.`, link: '#issues/admin_signin_failed' });
   for (const l of cloud?.limits || []) {
-    if (l.percent >= 80) alerts.push({ level: l.percent >= 100 ? 'bad' : 'warn', text: `${l.label}: ${l.percent}% of the free plan's daily limit.`, link: '#cloud' });
+    if (l.percent >= 80) alerts.push({ level: l.percent >= 100 ? 'bad' : 'warn', text: `${l.label}: ${l.percent}% of the free plan's daily limit.`, link: '#usage' });
   }
   return alerts;
 }
