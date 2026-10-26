@@ -42,6 +42,7 @@ import {
   person as adminPerson, personCsvResponse, endPerson, setPersonLimit,
 } from './remote/admin.js';
 import { usageRecorder } from './remote/usage.js';
+import { readPdfLite, looksReadable, markdownPdfBody } from './core/pdf.js';
 import {
   accessMode, setMode, inviteValid, decideSignIn, connectionAccess, recheckMember, accessSummary, accessOverview,
   addGroup, removeGroup, createInvite, revokeInvite, personAccess, cleanupStatements, accountHash,
@@ -265,6 +266,28 @@ function userTokenSource(env, accessKey, userId) {
   };
 }
 
+// ---------------------------------------------------------------- PDFs on the free plan
+
+// A full PDF engine needs 30-100 ms of CPU, far over the free plan's 10 ms per request. So:
+//   1. Cloudflare's toMarkdown converter (AI binding; free for PDFs, runs outside this Worker's CPU budget)
+//   2. if it finds no text, our small reader (text layer with ToUnicode maps; a few ms for normal files)
+//   3. if the PDF is a scan, its page pictures (JPEG) for the assistant to read itself
+const PDF_LITE_MAX_BYTES = 2 * 1024 * 1024;
+
+async function readPdf(env, bytes) {
+  if (env.AI?.toMarkdown) {
+    try {
+      const r = await env.AI.toMarkdown({ name: 'file.pdf', blob: new Blob([bytes], { type: 'application/pdf' }) });
+      const one = Array.isArray(r) ? r[0] : r;
+      const body = one?.format === 'error' ? '' : markdownPdfBody(one?.data);
+      if (looksReadable(body)) return { text: body };
+    } catch { /* fall back to the small reader */ }
+  }
+  if (bytes.length > PDF_LITE_MAX_BYTES) return {};
+  const lite = await readPdfLite(bytes);
+  return looksReadable(lite.text) ? { text: lite.text } : { images: lite.images };
+}
+
 // ---------------------------------------------------------------- MCP endpoint
 
 function accessKeyFrom(request, url) {
@@ -390,6 +413,7 @@ async function handleMcp(request, env, url, ctx) {
 
   const guard = toolGuard(env, userId, { onLimited: (m) => stat(env, ctx, m), ...(capRow ? { cap: capRow.daily_writes } : {}) });
   registerTeamsTools(server, client, {
+    readPdf: (bytes) => readPdf(env, bytes),
     beforeCall: guard,
     afterCall: (name, kind, info) => usage.tool(name, kind, info),
   });

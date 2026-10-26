@@ -372,7 +372,7 @@ app also revokes it. You can also remove the app's access in your Microsoft acco
 | `teams_get_mentions` | Messages where someone @mentioned you (default: last 7 days) | ✓ | ✓ |
 | `teams_search_messages` | Search message text across recent chats or one chat (every word must match; default: last 30 days) | ✓ | ✓ |
 | `teams_get_shared_files` | Files, pictures and links shared in a chat (group or 1:1), with who shared them and when; filter by type (`pdf`, `docx`, …) | ✓ | ✓ |
-| `teams_read_file` | Read a shared file or picture: Word, Excel (as CSV), PowerPoint, notebooks, text, code and CSV as text; pictures are shown; PDFs on the local server. Up to 15 MB, long text cut at 40,000 characters. Read-only | ✓ | ✓ (no PDF text) |
+| `teams_read_file` | Read a shared file or picture: Word, Excel (as CSV), PowerPoint, PDFs, notebooks, text, code and CSV as text; pictures are shown. Scanned PDFs are shown as page pictures when they hold JPEG pages. Up to 15 MB, long text cut at 40,000 characters. Read-only | ✓ | ✓ |
 | `teams_download_file` | Save a shared file or picture to `Downloads/Teams` on your computer (up to 100 MB; programs and scripts are not saved) | ✓ | – |
 | `teams_get_unread` | Unread chats and the messages after your read position (doesn't mark anything as read) | ✓ | ✓ |
 | `teams_get_my_recent_messages` | What you sent recently, across your latest chats (optional `since`) | ✓ | ✓ |
@@ -417,6 +417,10 @@ Clients that support MCP prompts (Claude Code `/` menu, Claude desktop "+" menu,
   nothing is copied or kept on the server. Pasted pictures come from Skype's media service with your Teams
   session. Tokens are only ever sent to Microsoft's own hosts; OneDrive's download links are fetched
   without any token.
+- **PDFs on the free Cloudflare plan:** a full PDF engine needs more CPU than a free request allows, so the
+  remote server uses Cloudflare's free document converter (Workers AI `toMarkdown`, `[ai]` binding in
+  `wrangler.toml`), then a small built-in reader, then the scanned page pictures. The local server reads
+  PDFs with pdf.js (unpdf). Scans stored as fax-style strips can't be read on either; open them in Teams.
 - **Local mode:** your refresh token is encrypted (AES-256-GCM) in your user profile with a
   machine- and user-bound key.
 - **Remote mode, per-user isolation:**

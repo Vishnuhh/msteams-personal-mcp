@@ -10,17 +10,19 @@ import { startLogin, loginState, logout, hasSavedLogin, getSkypeToken, getGraphT
 import { createTeamsClient } from './core/teams.js';
 import { registerTeamsTools, registerTeamsPrompts, wrap } from './core/tools.js';
 import { LIMITS, isRiskyType, extOf, mb } from './core/files.js';
+import { readPdfLite, looksReadable } from './core/pdf.js';
 
 const { version } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
 const server = new McpServer({ name: 'teams-personal', version });
 const client = createTeamsClient(getSkypeToken, { getGraphToken });
 
-/** PDF text, on this machine only (the free Cloudflare plan cannot afford PDF parsing). */
-async function extractPdf(bytes) {
+/** PDFs on this machine: full text with pdf.js (unpdf); scans fall back to their page pictures. */
+async function readPdf(bytes) {
   const { extractText, getDocumentProxy } = await import('unpdf');
-  const pdf = await getDocumentProxy(bytes);
-  const { totalPages, text } = await extractText(pdf, { mergePages: false });
-  return text.map((t, i) => `--- Page ${i + 1} of ${totalPages} ---\n${t}`).join('\n\n');
+  const { totalPages, text } = await extractText(await getDocumentProxy(bytes.slice()), { mergePages: false });
+  const joined = text.map((t, i) => `--- Page ${i + 1} of ${totalPages} ---\n${t}`).join('\n\n');
+  if (looksReadable(joined)) return { text: joined };
+  return { images: (await readPdfLite(bytes)).images };
 }
 
 server.registerTool('teams_login', {
@@ -58,7 +60,7 @@ server.registerTool('teams_logout', {
   inputSchema: {},
 }, wrap(async () => { logout(); return { signedOut: true }; }));
 
-registerTeamsTools(server, client, { extractPdf });
+registerTeamsTools(server, client, { readPdf });
 
 // Local only: save a shared file to this computer (Downloads/Teams), never overwriting an existing file.
 server.registerTool('teams_download_file', {

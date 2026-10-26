@@ -20,6 +20,11 @@ rules = [
 [vars]
 REPO_URL = "https://github.com/Vishnuhh/msteams-personal-mcp"
 
+# Cloudflare's document converter (Workers AI toMarkdown), used to read PDFs shared in chats.
+# Free for PDF conversion and available on the Workers Free plan.
+[ai]
+binding = "AI"
+
 [[d1_databases]]
 binding = "DB"
 database_name = "msteams-personal-mcp"

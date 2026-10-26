@@ -5,6 +5,18 @@ What changed in each release. Newest first. The server shows this page at `/chan
 Format: every release has a `## [version] - date` heading, one summary line, and short bullets under
 Added, Changed, Fixed or Security. A release cannot be deployed without its entry (`npm test` checks it).
 
+## [0.10.1] - 2026-10-26
+
+PDFs can be read on the remote server too.
+
+### Added
+- `teams_read_file` reads PDFs on the shared server as well, still on Cloudflare's free plan: first with Cloudflare's free document converter, then with a small built-in PDF reader for files the converter misses.
+- Scanned PDFs whose pages are pictures (JPEG) are shown to the assistant page by page, so it can read them itself.
+
+### Changed
+- The local server shows scanned PDF pages as pictures too, when a PDF has no text.
+- Some scans store each page as many black-and-white strips; those still can't be read, and the reply says so with a link to open the file.
+
 ## [0.10.0] - 2026-10-26
 
 Read files and pictures shared in chats.
