@@ -114,6 +114,8 @@ code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size
 .content { min-width: 0; padding: clamp(20px, 3vw, 36px) var(--pad) 72px; }
 .view { display: grid; gap: clamp(20px, 2.4vw, 32px); max-width: 1240px; animation: enter .35s var(--ease) both; }
 @keyframes enter { from { opacity: 0; transform: translateY(6px); } }
+.stack { display: grid; gap: clamp(20px, 2.4vw, 32px); min-width: 0; }
+.stack:empty { display: none; }
 .head { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 12px 24px; }
 .head h1 { margin: 0; font-size: var(--step-h1); font-weight: 600; letter-spacing: -0.03em; line-height: 1.1; }
 .head p { margin: 6px 0 0; color: var(--ink-2); font-size: var(--step-small); max-width: 70ch; }
@@ -938,7 +940,7 @@ ${configured ? '' : `<div class="center" id="notset" hidden><div class="signin">
   </aside>
 
   <main class="content" id="main">
-    <div id="viewError"></div>
+    <div class="stack" id="viewError"></div>
 
     <section class="view" id="v-overview" aria-labelledby="h-overview">
       <div class="head"><div><h1 id="h-overview">Overview</h1><p>Today at a glance. Anything that needs you is listed first; each item links to its cause.</p></div></div>
@@ -957,7 +959,7 @@ ${configured ? '' : `<div class="center" id="notset" hidden><div class="signin">
 
     <section class="view" id="v-issues" hidden aria-labelledby="h-issues">
       <div class="head"><div><h1 id="h-issues">Issues</h1><p>What went wrong, for whom, in which tool, and what to do. Pick a day, kind, person or tool to narrow it down.</p></div></div>
-      <div id="issuesBody"></div>
+      <div class="stack" id="issuesBody"></div>
     </section>
 
     <section class="view" id="v-people" hidden aria-labelledby="h-people">
@@ -968,7 +970,7 @@ ${configured ? '' : `<div class="center" id="notset" hidden><div class="signin">
 
     <section class="view" id="v-person" hidden aria-labelledby="pName">
       <div class="head"><div><h1 id="pName">Person</h1></div><div class="inline"><a class="btn quiet small" id="pIssues" href="#issues">${svg('issues')}Issues for this person</a><a class="link" href="#people">All people</a></div></div>
-      <div id="personBody"></div>
+      <div class="stack" id="personBody"></div>
       <template id="personTpl">
         <div class="stats">${stat('pReq', 'Requests, 30 days')}${stat('pTools', 'Tool calls')}${stat('pChanges', 'Changes')}${stat('pSearch', 'Searches')}</div>
         <div class="grid2">
@@ -993,7 +995,7 @@ ${configured ? '' : `<div class="center" id="notset" hidden><div class="signin">
 
     <section class="view" id="v-access" hidden aria-labelledby="h-access">
       <div class="head"><div><h1 id="h-access">Access</h1><p>Who can use this server.</p></div></div>
-      <div id="accessBody"></div>
+      <div class="stack" id="accessBody"></div>
       <template id="accessTpl">
         <section class="panel">
           <div class="head" style="margin-bottom:8px"><h2 style="margin:0">Who can connect</h2><div class="seg" role="group" aria-label="Who can connect"><button type="button" id="modeRestricted" aria-pressed="false">Restricted</button><button type="button" id="modeOpen" aria-pressed="false">Open</button></div></div>
@@ -1041,7 +1043,7 @@ ${configured ? '' : `<div class="center" id="notset" hidden><div class="signin">
 
     <section class="view" id="v-cloud" hidden aria-labelledby="h-cloud">
       <div class="head"><div><h1 id="h-cloud">Cloud</h1><p>Cloudflare usage and cost.</p></div></div>
-      <div id="cloud"></div>
+      <div class="stack" id="cloud"></div>
     </section>
 
     <section class="view" id="v-connections" hidden aria-labelledby="h-conn">
