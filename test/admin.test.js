@@ -48,7 +48,8 @@ test('isAdmin accepts a valid session cookie or the admin token, nothing else', 
 
 test('admin page renders without data and never inlines secrets', () => {
   const html = renderAdminPage({ configured: true });
-  assert.match(html, /<form class="signin" id="signinForm" hidden>/);
+  assert.match(html, /<div class="center" id="signinWrap" hidden>/);
+  assert.match(html, /<form class="signin" id="signinForm" novalidate>/);
   assert.doesNotMatch(html, /correct horse|tok_123/);
   assert.match(renderAdminPage({ configured: false }), /not set up yet/);
 });
@@ -56,6 +57,6 @@ test('admin page renders without data and never inlines secrets', () => {
 test('admin page has one view per sidebar item, plus the person view', () => {
   const html = renderAdminPage({ configured: true });
   const links = [...html.matchAll(/<li><a href="#(\w+)">/g)].map((m) => m[1]);
-  assert.deepEqual(links, ['overview', 'people', 'access', 'tools', 'cloud', 'connections', 'activity', 'settings']);
+  assert.deepEqual(links, ['overview', 'issues', 'people', 'access', 'tools', 'cloud', 'connections', 'activity', 'settings']);
   for (const v of [...links, 'person']) assert.match(html, new RegExp(`<section class="view" id="v-${v}"`));
 });

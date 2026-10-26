@@ -179,15 +179,15 @@ export function buildAlerts({ insights, cloud, failedAdminSignInsToday = 0 }) {
   const alerts = [];
   const today = insights.daily[insights.daily.length - 1] || emptyTotals();
   if (today.toolCalls >= 20 && today.errors / today.toolCalls > 0.05) {
-    alerts.push({ level: 'warn', text: `${today.errors} tool errors today (${Math.round((today.errors / today.toolCalls) * 100)}% of calls).` });
+    alerts.push({ level: 'warn', text: `${today.errors} tool errors today (${Math.round((today.errors / today.toolCalls) * 100)}% of calls).`, link: '#issues/tool_error' });
   }
-  if (today.throttled > 0) alerts.push({ level: 'warn', text: `Microsoft slowed down requests ${today.throttled} time(s) today.` });
+  if (today.throttled > 0) alerts.push({ level: 'warn', text: `Microsoft slowed down requests ${today.throttled} ${today.throttled === 1 ? 'time' : 'times'} today.`, link: '#issues/throttled' });
   for (const p of insights.people) {
-    if (p.capUsedToday >= 80) alerts.push({ level: p.capUsedToday >= 100 ? 'bad' : 'warn', text: `${p.name || 'A person'} used ${p.capUsedToday}% of their daily change limit.` });
+    if (p.capUsedToday >= 80) alerts.push({ level: p.capUsedToday >= 100 ? 'bad' : 'warn', text: `${p.name || 'A person'} used ${p.capUsedToday}% of their daily change limit.`, link: `#person/${p.key}` });
   }
-  if (failedAdminSignInsToday >= 3) alerts.push({ level: 'bad', text: `${failedAdminSignInsToday} failed admin sign-ins today.` });
+  if (failedAdminSignInsToday >= 3) alerts.push({ level: 'bad', text: `${failedAdminSignInsToday} failed admin sign-ins today.`, link: '#issues/admin_signin_failed' });
   for (const l of cloud?.limits || []) {
-    if (l.percent >= 80) alerts.push({ level: l.percent >= 100 ? 'bad' : 'warn', text: `${l.label}: ${l.percent}% of the free plan's daily limit.` });
+    if (l.percent >= 80) alerts.push({ level: l.percent >= 100 ? 'bad' : 'warn', text: `${l.label}: ${l.percent}% of the free plan's daily limit.`, link: '#cloud' });
   }
   return alerts;
 }

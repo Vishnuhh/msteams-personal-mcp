@@ -43,6 +43,7 @@ import {
 } from './remote/admin.js';
 import { usageRecorder } from './remote/usage.js';
 import { readPdfLite, looksReadable, markdownPdfBody } from './core/pdf.js';
+import { eventStatements, recordEvent, cleanupStatement, issuesReport } from './remote/diagnostics.js';
 import {
   accessMode, setMode, inviteValid, decideSignIn, connectionAccess, recheckMember, accessSummary, accessOverview,
   addGroup, removeGroup, createInvite, revokeInvite, personAccess, cleanupStatements, accountHash,
@@ -199,6 +200,7 @@ async function loginPoll(request, env, ctx) {
     if (!d.ok) {
       await env.DB.prepare('DELETE FROM logins WHERE id = ?').bind(id).run();
       stat(env, ctx, 'signin_not_allowed');
+      recordEvent(env, ctx, { kind: 'signin_refused', accountHash: hash, detail: `${name || 'Someone'}: ${d.error}` });
       return json({ status: 'error', error: d.error }, 403);
     }
   } else if (cfg.allowList.length && !cfg.allowList.some((a) => a === mri || `8:${a}` === mri)) {
@@ -351,6 +353,7 @@ async function handleMcp(request, env, url, ctx) {
     await env.DB.prepare('DELETE FROM users WHERE id = ?').bind(userId).run();
     skypeCache.delete(userId);
     stat(env, ctx, 'access_denied');
+    recordEvent(env, ctx, { kind: 'access_denied', accountHash: row.account_hash, detail: `Connection from ${row.account_name || 'an app'} stopped: the account no longer has access.` });
     return unauthorized(url, "This account doesn't have access to this server any more. Ask its admin.", 'invalid_token');
   }
   if (!(await limit(env, 'USER_LIMITER', userId))) {
@@ -371,7 +374,14 @@ async function handleMcp(request, env, url, ctx) {
   };
   // Per-person usage counts for this request (numbers only), written in one batch when the response is ready.
   const usage = usageRecorder({ userId, accountHash: row.account_hash, now });
-  const client = createTeamsClient(getSkypeToken, { onTeamsCall: () => usage.add('teams_call'), onThrottled: () => usage.add('throttled'), getGraphToken });
+  // Issue events for the admin page (what, which tool, why); written with the usage batch.
+  const events = [];
+  let currentTool = null;
+  const onThrottled = (info) => {
+    usage.add('throttled');
+    events.push({ kind: 'throttled', tool: currentTool, detail: `${info?.area || 'Microsoft'} · HTTP ${info?.status ?? 429} · asked to wait ${info?.retryAfter ?? '?'}s · ${info?.retrying ? 'retried automatically' : 'gave up'}` });
+  };
+  const client = createTeamsClient(getSkypeToken, { onTeamsCall: () => usage.add('teams_call'), onThrottled, getGraphToken });
   // Group members are re-checked once a day, in the background; leaving every access group ends their connections.
   if (access === 'recheck') ctx.waitUntil(recheckMember(env, client, row.account_hash, now).catch(() => {}));
   // Date-level last use, written at most once a day; backfill the account hash and name for older connections.
@@ -435,15 +445,19 @@ async function handleMcp(request, env, url, ctx) {
   registerTeamsTools(server, client, {
     readPdf: (bytes) => readPdf(env, bytes),
     notice,
-    beforeCall: guard,
-    afterCall: (name, kind, info) => usage.tool(name, kind, info),
+    beforeCall: (name, kind) => { currentTool = name; return guard(name, kind); },
+    afterCall: (name, kind, info) => {
+      usage.tool(name, kind, info);
+      if (info.refused) events.push({ kind: 'refused', tool: name, detail: info.error });
+      else if (info.isError) events.push({ kind: 'tool_error', tool: name, detail: info.error });
+    },
   });
   registerTeamsPrompts(server);
 
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   await server.connect(transport);
   const response = await transport.handleRequest(request);
-  ctx.waitUntil(env.DB.batch(usage.statements(env)).catch(() => {}));
+  ctx.waitUntil(env.DB.batch([...usage.statements(env), ...eventStatements(env, events, { userId, accountHash: row.account_hash })]).catch(() => {}));
   return withCors(response);
 }
 
@@ -471,6 +485,7 @@ async function cleanup(env) {
     env.DB.prepare('DELETE FROM stats WHERE day < ?').bind(new Date(now - 90 * DAY_MS).toISOString().slice(0, 10)),
     env.DB.prepare('DELETE FROM usage_daily WHERE day < ?').bind(new Date(now - 90 * DAY_MS).toISOString().slice(0, 10)),
     ...cleanupStatements(env, now),
+    cleanupStatement(env, now),
   ]);
   const expired = results[0]?.meta?.changes || 0;
   await env.DB.prepare("INSERT INTO stats (day, metric, count) VALUES (?, 'cleanup_run', 1) ON CONFLICT(day, metric) DO UPDATE SET count = count + 1").bind(today()).run();
@@ -552,7 +567,12 @@ export default {
 
       // Admin area
       if ((path === '/admin' || path === '/admin/') && method === 'GET') return html(renderAdminPage({ configured: adminConfigured(env) }));
-      if (path === '/admin/login' && method === 'POST') return await adminLogin(request, env, () => stat(env, ctx, 'admin_signin_failed'));
+      if (path === '/admin/login' && method === 'POST') {
+        return await adminLogin(request, env, () => {
+          stat(env, ctx, 'admin_signin_failed');
+          recordEvent(env, ctx, { kind: 'admin_signin_failed', detail: `Wrong username or password, from ${request.cf?.country || 'an unknown country'}` });
+        });
+      }
       if (path.startsWith('/admin/')) {
         // Cookie-authenticated changes need a custom header, which other sites cannot send (no CORS for /admin).
         if (method === 'POST' && request.headers.get('X-Admin') !== '1') return json({ error: 'Missing X-Admin header.' }, 400);
@@ -563,6 +583,13 @@ export default {
         const settingsView = { accessCodeRequired: s.accessCodeRequired, allowListSize: s.allowList.length, personalUrls: s.personalUrls, alerts: s.alerts, restricted: mode.restricted };
         if ((path === '/admin/api/overview' || path === '/admin/stats') && method === 'GET') {
           return json(await adminOverview(env, { version: VERSION, settings: settingsView, inactiveDays: INACTIVE_DAYS, access: { ...mode, ...(await accessSummary(env, mode)) } }));
+        }
+        if (path === '/admin/api/issues' && method === 'GET') {
+          const q = url.searchParams;
+          const pick = (k, re) => (re.test(q.get(k) || '') ? q.get(k) : null);
+          return json(await issuesReport(env, {
+            kind: pick('kind', /^[a-z_]{3,30}$/), key: pick('key', /^[0-9a-f]{64}$/), tool: pick('tool', /^teams_[a-z_]{2,40}$/), day: pick('day', /^\d{4}-\d{2}-\d{2}$/),
+          }));
         }
         if (path === '/admin/api/access' && method === 'GET') return await accessOverview(env, mode, { adminKey: (await adminTeamsInfo(env)).key });
         if (path === '/admin/api/access/my-groups' && method === 'GET') return await myGroups(env);

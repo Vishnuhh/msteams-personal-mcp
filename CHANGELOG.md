@@ -5,6 +5,13 @@ What changed in each release. Newest first. The server shows this page at `/chan
 Format: every release has a `## [version] - date` heading, one summary line, and short bullets under
 Added, Changed, Fixed or Security. A release cannot be deployed without its entry (`npm test` checks it).
 
+## [0.11.1] - 2026-10-26
+
+Fewer Microsoft slow-downs during searches.
+
+### Fixed
+- Searching messages, finding mentions and checking unread chats now read at most 6 chats at a time instead of all at once. Microsoft was slowing down accounts that ran several searches in a row.
+
 ## [0.11.0] - 2026-10-26
 
 New features reach every connected app without reconnecting.

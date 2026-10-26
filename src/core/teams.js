@@ -11,6 +11,33 @@ const CONTACTS = 'https://contacts.skype.com/contacts/v2/users';
 const TARGET_TYPES = 'Passport|Skype|Lync|Thread|PSTN|Agent';
 const CONTACTS_TTL_MS = 10 * 60 * 1000;
 // Cloudflare Workers Free allows 50 outgoing requests per call; keep name lookups well under that.
+// Work across many chats runs a few at a time: a burst of 100+ parallel calls makes Microsoft throttle the account.
+const FANOUT = 6;
+async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i], i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
+
+/** "/users/ME/conversations/{id}/messages": which Microsoft endpoint, with ids removed (for diagnostics). */
+export function apiArea(url) {
+  try {
+    const u = new URL(url);
+    const path = u.pathname.replace(/^\/api\/chatsvc\/consumer\/v1/, '')
+      .split('/').map((seg) => (/%3A|:|@|^\d{5,}$/.test(seg) || seg.length > 40 ? '{id}' : seg)).join('/');
+    return `${u.hostname.split('.')[0]} ${path || '/'}`;
+  } catch {
+    return 'unknown';
+  }
+}
+
 const MAX_TITLE_LOOKUPS = 20;
 
 // Module-level caches survive across requests in the same process / Worker isolate.
@@ -230,9 +257,10 @@ export function createTeamsClient(getSkypeToken, hooks = {}) {
       const res = await fetch(url, { method, headers: await chatHeaders(body), body: body ? JSON.stringify(body) : undefined });
       const text = await res.text();
       if (res.status === 429 || res.status === 503) {
-        counted(hooks.onThrottled);
         // Microsoft is throttling this account: honour a short Retry-After once, otherwise explain.
         const wait = Number(res.headers.get('Retry-After')) || 2;
+        const retrying = attempt === 0 && wait <= 5;
+        counted(() => hooks.onThrottled?.({ area: apiArea(url), status: res.status, retryAfter: wait, retrying }));
         if (attempt === 0 && wait <= 5) { await new Promise((r) => setTimeout(r, wait * 1000)); continue; }
         const err = new Error(`Teams is limiting requests for your account right now. Try again in about ${Math.max(wait, 10)} seconds.`);
         err.throttled = true;
@@ -320,7 +348,7 @@ export function createTeamsClient(getSkypeToken, hooks = {}) {
     const pending = chats.filter((c) => c.type === 'one-on-one' && isIdLike(c.title, c.id));
     if (!pending.length) return chats;
     const [self, names] = await Promise.all([me(), contactNames()]);
-    await Promise.all(pending.slice(0, max).map(async (c) => {
+    await mapLimit(pending.slice(0, max), FANOUT, async (c) => {
       try {
         const other = await partnerOf(c.id, self);
         if (!other) return;
@@ -331,7 +359,7 @@ export function createTeamsClient(getSkypeToken, hooks = {}) {
         const theirs = (msgs.messages || []).find((m) => mriFromUrl(m.from) === other && m.imdisplayname);
         if (theirs) c.title = theirs.imdisplayname;
       } catch { /* keep id title */ }
-    }));
+    });
     return chats;
   }
 
@@ -525,21 +553,21 @@ export function createTeamsClient(getSkypeToken, hooks = {}) {
   async function getUnread({ chats = 50, perChat = 20, maxChats = 15 } = {}) {
     const unread = (await listChats({ limit: chats, resolveNames: false })).filter((c) => c.unread).slice(0, maxChats);
     await resolveTitles(unread, { max: 10 });
-    return Promise.all(unread.map(async (c) => {
+    return mapLimit(unread, FANOUT, async (c) => {
       const msgs = await getMessages(c.id, { limit: perChat }).catch(() => []);
       const fresh = msgs.filter((m) => !m.isMine && Number(m.id) > (c.readUpTo ?? 0));
       return { id: c.id, title: c.title, type: c.type, unreadCount: fresh.length, messages: fresh.reverse() };
-    }));
+    });
   }
 
   /** Messages the signed-in user sent recently, across their most recent chats. */
   async function getMyRecentMessages({ chats = 15, perChat = 30, limit = 20, since } = {}) {
     const recent = (await listChats({ limit: chats, resolveNames: false })).filter((c) => c.type !== 'system' || c.id === '48:notes');
     await resolveTitles(recent, { max: 10 });
-    const lists = await Promise.all(recent.map(async (c) => {
+    const lists = await mapLimit(recent, FANOUT, async (c) => {
       const msgs = await getMessages(c.id, { limit: perChat, since }).catch(() => []);
       return msgs.filter((m) => m.isMine).map((m) => ({ ...m, chat: c.title }));
-    }));
+    });
     return lists.flat().sort((a, b) => String(b.time).localeCompare(String(a.time))).slice(0, limit);
   }
 
@@ -700,10 +728,10 @@ export function createTeamsClient(getSkypeToken, hooks = {}) {
     const recent = (await listChats({ limit: chats, resolveNames: false }))
       .filter((c) => c.type !== 'system' && (!c.lastMessage?.time || Date.parse(c.lastMessage.time) >= sinceMs));
     await resolveTitles(recent, { max: 8 });
-    const lists = await Promise.all(recent.map(async (c) => {
+    const lists = await mapLimit(recent, FANOUT, async (c) => {
       const msgs = await getMessages(c.id, { limit: 200, since: sinceMs }).catch(() => []);
       return msgs.filter((m) => !m.isMine && m.mentions?.some((x) => x.isMe)).map((m) => ({ ...m, chat: c.title }));
-    }));
+    });
     return lists.flat().sort((a, b) => String(b.time).localeCompare(String(a.time))).slice(0, limit);
   }
 
@@ -723,18 +751,17 @@ export function createTeamsClient(getSkypeToken, hooks = {}) {
         .filter((c) => c.type !== 'system' && (!c.lastMessage?.time || Date.parse(c.lastMessage.time) >= sinceMs));
       await resolveTitles(scope, { max: 8 });
     }
-    const lists = await Promise.all(scope.map(async (c) => {
+    const lists = await mapLimit(scope, FANOUT, async (c) => {
       const msgs = await getMessages(c.id, { limit: 200, since: sinceMs }).catch(() => []);
       return msgs.filter((m) => {
         const hay = [m.text, m.from, ...(m.files || []).map((f) => f.name), ...(m.links || []).map((l) => `${l.url} ${l.title || ''}`)]
           .join(' ').toLowerCase();
         return words.every((w) => hay.includes(w));
       }).map((m) => ({ ...m, chat: c.title }));
-    }));
+    });
     return lists.flat().sort((a, b) => String(b.time).localeCompare(String(a.time))).slice(0, limit);
   }
 
-  /** Files and links shared in one chat, newest first. */
   /** Files, pictures and links shared in a chat, newest first. messageId + index identify each for readAttachment. */
   async function getSharedFiles(conversationId, { since = '90d', limit = 50, type = null } = {}) {
     const [self, names] = await Promise.all([me(), contactNames().catch(() => new Map())]);

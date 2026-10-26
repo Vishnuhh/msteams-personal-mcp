@@ -78,7 +78,8 @@ export function registerTeamsTools(server, client, { beforeCall, afterCall, read
     const report = (result, refused = false) => {
       if (afterCall) {
         const bytes = (result?.content || []).reduce((n, c) => n + (c.text?.length || c.data?.length || 0), 0);
-        try { afterCall(name, kind, { ms: Date.now() - started, bytes, isError: Boolean(result?.isError), refused }); } catch { /* counting never breaks a call */ }
+        const error = result?.isError ? String(result.content?.[0]?.text || '').slice(0, 300) : null;
+        try { afterCall(name, kind, { ms: Date.now() - started, bytes, isError: Boolean(result?.isError), refused, error }); } catch { /* counting never breaks a call */ }
       }
       return withNotice(result);
     };

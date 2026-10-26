@@ -8,6 +8,7 @@ import { hmacHex, safeEqual } from './crypto.js';
 import { buildInsights, buildAlerts, personCsv, dayOf } from './usage.js';
 import { cloudUsage } from './cloud.js';
 import { TOOLS_VERSION } from '../core/tools.js';
+import { issueDays } from './diagnostics.js';
 
 const SESSION_HOURS = 8;
 const COOKIE = 'tpm_admin';
@@ -115,13 +116,16 @@ export async function overview(env, { version, settings, inactiveDays, dailyCap 
   const lastCleanup = await env.DB.prepare("SELECT day FROM stats WHERE metric = 'cleanup_run' ORDER BY day DESC LIMIT 1").first();
   const todayTotals = insights.daily[insights.daily.length - 1];
   const alerts = buildAlerts({ insights, cloud: cloud?.configured && !cloud.error ? cloud : null, failedAdminSignInsToday: failedAdminToday });
-  if (access.waiting) alerts.unshift({ level: 'warn', text: `${access.waiting} ${access.waiting === 1 ? 'person is' : 'people are'} waiting for an access decision. See Access.` });
+  if (access.waiting) alerts.unshift({ level: 'warn', text: `${access.waiting} ${access.waiting === 1 ? 'person is' : 'people are'} waiting for an access decision.`, link: '#access' });
   const oldTools = connections.filter((c) => !c.toolsUpToDate).length;
-  if (oldTools) alerts.push({ level: 'warn', text: `${oldTools} connection${oldTools === 1 ? ' has' : 's have'} an older tool list. Claude shows those people a note to refresh the connector.` });
-  if (!access.restricted) alerts.push({ level: 'warn', text: 'Access is open: any personal Microsoft account can connect. Restrict it under Access.' });
+  if (oldTools) alerts.push({ level: 'warn', text: `${oldTools} connection${oldTools === 1 ? ' has' : 's have'} an older tool list. Claude shows those people a note to refresh the connector.`, link: '#connections/refresh' });
+  if (!access.restricted) alerts.push({ level: 'warn', text: 'Access is open: any personal Microsoft account can connect.', link: '#access' });
+  const issues = await issueDays(env, now).catch(() => ({ days: [], today: 0 }));
   return {
     version,
     access: { restricted: access.restricted, waiting: access.waiting },
+    issueDays: issues.days,
+    issuesToday: issues.today,
     totals: {
       people: insights.people.length,
       activeToday: insights.adoption.activeToday,
