@@ -79,7 +79,7 @@ export async function pollLink(env) {
 
 /** Unlinking forgets the sign-in; the account keeps its approval. */
 export async function unlink(env) {
-  await env.DB.batch([drop(env, 'admin_teams'), drop(env, 'admin_teams_info'), drop(env, 'admin_teams_link')]);
+  await env.DB.batch([drop(env, 'admin_teams'), drop(env, 'admin_teams_info'), drop(env, 'admin_teams_link'), env.DB.prepare('DELETE FROM admin_group_cache')]);
   return json({ ok: true });
 }
 
@@ -99,14 +99,58 @@ function adminClient(env) {
   });
 }
 
-/** The group chats the admin is in, marked when already added as an access group. */
-export async function myGroups(env) {
-  let groups;
-  try {
-    groups = await adminClient(env).listGroupChats();
-  } catch (e) {
-    return json({ error: e.message, unlinked: Boolean(e.unlinked) }, e.unlinked ? 409 : 502);
+const CACHE_MS = 6 * 3600 * 1000;
+
+/** Reads the admin's group chats from Teams into admin_group_cache (replacing what was there). */
+async function refreshGroupCache(env, now = Date.now()) {
+  const groups = await adminClient(env).listGroupChats();
+  const stmts = [env.DB.prepare('DELETE FROM admin_group_cache')];
+  for (const g of groups) {
+    stmts.push(env.DB.prepare('INSERT OR REPLACE INTO admin_group_cache (conversation_id, title, last_active, last_from, fetched_at) VALUES (?, ?, ?, ?, ?)')
+      .bind(g.id, g.title || null, g.lastActive || null, g.lastFrom || null, now));
   }
-  const added = new Set(((await env.DB.prepare('SELECT conversation_id FROM access_groups').all()).results || []).map((r) => r.conversation_id));
-  return json({ groups: groups.map((g) => ({ ...g, added: added.has(g.id) })) });
+  for (let i = 0; i < stmts.length; i += 100) await env.DB.batch(stmts.slice(i, i + 100));
+  return groups.length;
+}
+
+/**
+ * GET /admin/api/access/my-groups?q=&page=&size=&refresh=1: the admin's group chats, 10 at a time, searched and
+ * paged from a server-side copy that is re-read from Teams on request or when older than 6 hours.
+ */
+export async function myGroups(env, { page, size, q }, { refresh = false, now = Date.now() } = {}) {
+  const info = await adminTeamsInfo(env);
+  if (!info.linked) return json({ error: 'Link your Teams account first.', unlinked: true }, 409);
+  const fetched = (await env.DB.prepare('SELECT MIN(fetched_at) AS at, COUNT(*) AS n FROM admin_group_cache').first()) || {};
+  if (refresh || !fetched.n || now - fetched.at > CACHE_MS) {
+    try { await refreshGroupCache(env, now); } catch (e) {
+      if (!fetched.n || e.unlinked) return json({ error: e.message, unlinked: Boolean(e.unlinked) }, e.unlinked ? 409 : 502);
+    }
+  }
+  const where = q ? 'WHERE c.title LIKE ? OR c.last_from LIKE ?' : '';
+  const args = q ? [`%${q}%`, `%${q}%`] : [];
+  const total = (await env.DB.prepare(`SELECT COUNT(*) AS n FROM admin_group_cache c ${where}`).bind(...args).first())?.n ?? 0;
+  const all = (await env.DB.prepare('SELECT COUNT(*) AS n, MIN(fetched_at) AS at FROM admin_group_cache').first()) || {};
+  const rows = (await env.DB.prepare(
+    `SELECT c.conversation_id, c.title, c.last_active, c.last_from, (g.conversation_id IS NOT NULL) AS added
+     FROM admin_group_cache c LEFT JOIN access_groups g ON g.conversation_id = c.conversation_id ${where}
+     ORDER BY c.last_active DESC LIMIT ? OFFSET ?`,
+  ).bind(...args, size, (page - 1) * size).all()).results || [];
+  return json({
+    items: rows.map((r) => ({ id: r.conversation_id, title: r.title, lastActive: r.last_active, lastFrom: r.last_from, added: Boolean(r.added) })),
+    total, page, size, all: all.n || 0, fetchedAt: all.at ? new Date(all.at).toISOString() : null,
+  });
+}
+
+/** Whether the linked admin account is in a group chat: { linked, member, topic }. */
+export async function adminMembership(env, conversationId) {
+  const info = await adminTeamsInfo(env);
+  if (!info.linked) return { linked: false };
+  const cached = await env.DB.prepare('SELECT title FROM admin_group_cache WHERE conversation_id = ?').bind(conversationId).first();
+  if (cached) return { linked: true, member: true, topic: cached.title };
+  try {
+    const m = await adminClient(env).membership(conversationId);
+    return { linked: true, member: m.member, topic: m.topic };
+  } catch {
+    return { linked: true, member: null };
+  }
 }

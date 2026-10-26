@@ -1,31 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync } from 'node:fs';
 import {
   accessMode, setMode, decideSignIn, connectionAccess, recheckMember, personAccess, createInvite, inviteValid, REFUSED, approveAdminAccount,
 } from '../src/remote/access.js';
+import { d1, hasSqlite } from './d1.js';
 
-// Real SQLite with the real migrations, wrapped in the small part of the D1 API the code uses.
-// node:sqlite ships with Node 22.13+; older Node skips these tests.
-let DatabaseSync = null;
-try { ({ DatabaseSync } = await import('node:sqlite')); } catch { /* not available */ }
-const t = DatabaseSync ? test : test.skip;
-
-function d1() {
-  const db = new DatabaseSync(':memory:');
-  for (const f of readdirSync('migrations').filter((n) => n.endsWith('.sql')).sort()) db.exec(readFileSync(`migrations/${f}`, 'utf8'));
-  const prepare = (sql) => {
-    const st = {
-      args: [],
-      bind(...a) { st.args = a; return st; },
-      async run() { const r = db.prepare(sql).run(...st.args); return { meta: { changes: Number(r.changes) } }; },
-      async first() { return db.prepare(sql).get(...st.args) ?? null; },
-      async all() { return { results: db.prepare(sql).all(...st.args) }; },
-    };
-    return st;
-  };
-  return { db, prepare, batch: async (list) => { const out = []; for (const s of list) out.push(await s.run()); return out; } };
-}
+const t = hasSqlite ? test : test.skip;
 
 const H1 = 'a'.repeat(64);
 const H2 = 'b'.repeat(64);

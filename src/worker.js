@@ -24,7 +24,9 @@
 //   BRAND_LOGO, BRAND_NAME, BRAND_URL   optional organisation logo on the home page (a path served by this
 //                          Worker's static assets, e.g. /brand/logo.webp), its alt text, and where it links
 //   ADMIN_USERNAME, ADMIN_PASSWORD   admin sign-in for /admin (secrets; password at least 12 characters)
-//   ADMIN_TOKEN            bearer token for /admin/stats and /admin/api/* (secret, for scripts)
+//   ADMIN_TOKEN            read-only bearer token for /admin/stats and GET /admin/api/* (secret, for scripts)
+// Personal URLs, new-connection notes, the access code, the default daily change cap, how long unused connections
+// last and the alert webhook can also be changed on the admin page (Settings), which overrides the variables.
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { CfWorkerJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/cfworker';
@@ -37,18 +39,16 @@ import { renderPage } from './remote/page.js';
 import { renderAuthorizePage, renderAuthorizeError } from './remote/authorize-page.js';
 import { renderChangelogPage } from './remote/changelog.js';
 import { limit, toolGuard } from './remote/limits.js';
-import {
-  adminConfigured, isAdmin, login as adminLogin, logout as adminLogout, overview as adminOverview, endConnection, renderAdminPage,
-  person as adminPerson, personCsvResponse, endPerson, setPersonLimit,
-} from './remote/admin.js';
+import { adminConfigured, auditCleanup } from './remote/admin-auth.js';
+import { overview as adminOverview } from './remote/admin.js';
+import { handleAdmin } from './remote/admin-routes.js';
+import { serverSettings, settingsView, accessCodeOk } from './remote/settings.js';
 import { usageRecorder } from './remote/usage.js';
 import { readPdfLite, looksReadable, markdownPdfBody } from './core/pdf.js';
-import { eventStatements, recordEvent, cleanupStatement, issuesReport } from './remote/diagnostics.js';
+import { eventStatements, recordEvent, cleanupStatement } from './remote/diagnostics.js';
 import {
-  accessMode, setMode, inviteValid, decideSignIn, connectionAccess, recheckMember, accessSummary, accessOverview,
-  addGroup, removeGroup, createInvite, revokeInvite, personAccess, cleanupStatements, accountHash,
+  accessMode, inviteValid, decideSignIn, connectionAccess, recheckMember, accessCounts, cleanupStatements, accountHash,
 } from './remote/access.js';
-import { adminTeamsInfo, teamsStatus, startLink, pollLink, unlink, myGroups } from './remote/admin-teams.js';
 import CHANGELOG from '../CHANGELOG.md';
 import pkg from '../package.json';
 import {
@@ -60,7 +60,6 @@ const VERSION = pkg.version;
 const USER_INFO = 'user-data-v1';
 const LOGIN_INFO = 'login-data-v1';
 const DAY_MS = 24 * 60 * 60 * 1000;
-const INACTIVE_DAYS = 90;
 
 // Per-isolate cache of skypetokens, keyed by user row id. Saves a D1 read + decrypt per request.
 const skypeCache = new Map();
@@ -80,13 +79,6 @@ const json = (data, status = 200, headers = {}) =>
 const salt = (env) => env.KEY_SALT || 'msteams-personal-mcp';
 const today = () => new Date().toISOString().slice(0, 10);
 const modeOf = (env) => accessMode(env, { defaultRestricted: adminConfigured(env) });
-const flag = (v) => String(v || '').toLowerCase() === 'true';
-const settings = (env) => ({
-  accessCodeRequired: Boolean(env.ACCESS_CODE),
-  allowList: String(env.ALLOWED_ACCOUNTS || '').split(/[\s,]+/).filter(Boolean),
-  personalUrls: !flag(env.DISABLE_PERSONAL_URLS),
-  alerts: String(env.NEW_CONNECTION_ALERTS || '').toLowerCase() !== 'false',
-});
 
 /** Anonymous daily counter (no ids, names or content). Never blocks or fails the request. */
 function stat(env, ctx, metric) {
@@ -98,7 +90,7 @@ function stat(env, ctx, metric) {
 // ---------------------------------------------------------------- pages (CSP with script hashes)
 
 const scriptHashes = new Map();
-async function html(body, status = 200) {
+async function html(body, status = 200, { fonts = true } = {}) {
   const hashes = [];
   for (const m of body.matchAll(/<script>([\s\S]*?)<\/script>/g)) {
     if (!scriptHashes.has(m[1])) scriptHashes.set(m[1], await sha256B64(m[1]));
@@ -114,8 +106,9 @@ async function html(body, status = 200) {
       'X-Content-Type-Options': 'nosniff',
       'Strict-Transport-Security': 'max-age=31536000',
       'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
-      'Content-Security-Policy': `default-src 'self'; script-src 'self' ${hashes.join(' ')}; style-src 'self' 'unsafe-inline' https://api.fontshare.com; ` +
-        "font-src https://cdn.fontshare.com; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; form-action 'none'; base-uri 'none'",
+      // fonts: false (the admin page) allows no third-party style or font hosts at all.
+      'Content-Security-Policy': `default-src 'self'; script-src 'self' ${hashes.join(' ')}; style-src 'self' 'unsafe-inline'${fonts ? ' https://api.fontshare.com' : ''}; ` +
+        `font-src ${fonts ? 'https://cdn.fontshare.com' : "'none'"}; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; form-action 'none'; base-uri 'none'`,
     },
   });
 }
@@ -123,9 +116,9 @@ async function html(body, status = 200) {
 // ---------------------------------------------------------------- sign-in API
 
 async function loginStart(request, env, ctx) {
-  const cfg = settings(env);
+  const cfg = await serverSettings(env);
   const body = await request.json().catch(() => ({}));
-  if (cfg.accessCodeRequired && !safeEqual(String(body.accessCode || '').trim(), String(env.ACCESS_CODE))) {
+  if (!(await accessCodeOk(env, cfg, body.accessCode))) {
     stat(env, ctx, 'signin_bad_access_code');
     return json({ error: body.accessCode ? 'That access code is not right.' : 'Enter the team access code.', needAccessCode: true }, 403);
   }
@@ -153,7 +146,7 @@ async function newConnectionAlert(skype, { appName, host, country }) {
 }
 
 async function loginPoll(request, env, ctx) {
-  const cfg = settings(env);
+  const cfg = await serverSettings(env);
   const { loginId, req } = await request.json().catch(() => ({}));
   if (typeof loginId !== 'string' || !loginId.startsWith('login_')) return json({ status: 'error', error: 'Missing loginId.' }, 400);
   if (req !== undefined && !(await requestExists(env, req))) {
@@ -324,7 +317,7 @@ async function handleMcp(request, env, url, ctx) {
     // Stateless server: no standalone SSE stream and no sessions to delete.
     return json({ jsonrpc: '2.0', error: { code: -32000, message: 'Method not allowed.' }, id: null }, 405, { Allow: 'POST', ...CORS_HEADERS });
   }
-  const cfg = settings(env);
+  const cfg = await serverSettings(env);
   const signInUrl = `${url.origin}/`;
   const found = accessKeyFrom(request, url);
   if (!found) return unauthorized(url, `Sign in to connect: your app should open the sign-in page automatically, or see ${signInUrl}`);
@@ -342,11 +335,11 @@ async function handleMcp(request, env, url, ctx) {
 
   const now = Date.now();
   const lastUsed = row.last_used_at || row.created_at;
-  if (now - lastUsed > INACTIVE_DAYS * DAY_MS) {
+  if (now - lastUsed > cfg.inactiveDays * DAY_MS) {
     await env.DB.prepare('DELETE FROM users WHERE id = ?').bind(userId).run();
     skypeCache.delete(userId);
     stat(env, ctx, 'expired');
-    return unauthorized(url, `This connection expired after ${INACTIVE_DAYS} days without use. Sign in again.`, 'invalid_token');
+    return unauthorized(url, `This connection expired after ${cfg.inactiveDays} days without use. Sign in again.`, 'invalid_token');
   }
   const access = await connectionAccess(env, await modeOf(env), row, now);
   if (access === 'denied') {
@@ -427,7 +420,7 @@ async function handleMcp(request, env, url, ctx) {
     return { signedOut: true, connectionsEnded: ended, signInAgainAt: signInUrl };
   }));
 
-  const guard = toolGuard(env, userId, { onLimited: (m) => stat(env, ctx, m), ...(capRow ? { cap: capRow.daily_writes } : {}) });
+  const guard = toolGuard(env, userId, { onLimited: (m) => stat(env, ctx, m), cap: capRow ? capRow.daily_writes : cfg.dailyCap });
 
   // Apps cache the tool list. Remember which version this connection loaded, and if it's older than the server's,
   // add a short "refresh the connector" note to a tool result (at most every 30 minutes per connection).
@@ -474,7 +467,7 @@ function rememberPerson(env, hash, name, now) {
 /** Daily cron: remove what is no longer needed. */
 async function cleanup(env) {
   const now = Date.now();
-  const stale = now - INACTIVE_DAYS * DAY_MS;
+  const stale = now - (await serverSettings(env)).inactiveDays * DAY_MS;
   const results = await env.DB.batch([
     env.DB.prepare('DELETE FROM users WHERE COALESCE(last_used_at, created_at) < ?').bind(stale),
     env.DB.prepare('DELETE FROM oauth_clients WHERE COALESCE(last_used_at, created_at) < ?').bind(stale),
@@ -486,6 +479,7 @@ async function cleanup(env) {
     env.DB.prepare('DELETE FROM usage_daily WHERE day < ?').bind(new Date(now - 90 * DAY_MS).toISOString().slice(0, 10)),
     ...cleanupStatements(env, now),
     cleanupStatement(env, now),
+    ...auditCleanup(env, now),
   ]);
   const expired = results[0]?.meta?.changes || 0;
   await env.DB.prepare("INSERT INTO stats (day, metric, count) VALUES (?, 'cleanup_run', 1) ON CONFLICT(day, metric) DO UPDATE SET count = count + 1").bind(today()).run();
@@ -503,7 +497,8 @@ const LIMITS = [
   { match: (p, m) => m === 'POST' && p === '/api/login/poll', binding: 'LOGIN_POLL_LIMITER', message: 'Checking too often. Wait a few seconds.' },
   { match: (p, m) => m === 'POST' && (p === '/mcp' || p.startsWith('/mcp/')), binding: 'MCP_LIMITER', message: 'Too many requests. Slow down and retry shortly.' },
   { match: (p) => ['/register', '/authorize', '/token', '/revoke', '/oauth/deny'].includes(p), binding: 'OAUTH_LIMITER', message: 'Too many requests. Wait a minute and try again.' },
-  { match: (p) => p.startsWith('/admin/'), binding: 'ADMIN_LIMITER', message: 'Too many admin requests or sign-in attempts. Wait a minute and try again.' },
+  { match: (p, m) => m === 'POST' && p === '/admin/login', binding: 'ADMIN_LOGIN_LIMITER', message: 'Too many sign-in attempts. Wait a minute and try again.' },
+  { match: (p) => p.startsWith('/admin/') && p !== '/admin/login', binding: 'ADMIN_LIMITER', message: 'Too many admin requests. Wait a minute and try again.' },
 ];
 
 async function rateLimited(request, env, url, ctx) {
@@ -522,13 +517,13 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname;
     const method = request.method;
-    const cfg = settings(env);
     try {
       if (method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS_HEADERS });
       const limited = await rateLimited(request, env, url, ctx);
       if (limited) return limited;
 
       if (path === '/' && method === 'GET') {
+        const cfg = await serverSettings(env);
         return html(renderPage({ repoUrl: env.REPO_URL, version: 'v' + VERSION, accessCodeRequired: cfg.accessCodeRequired, personalUrls: cfg.personalUrls, restricted: (await modeOf(env)).restricted,
           brand: env.BRAND_LOGO ? { logo: env.BRAND_LOGO, name: env.BRAND_NAME, url: env.BRAND_URL } : null }));
       }
@@ -548,6 +543,7 @@ export default {
         const r = await startAuthorization(url, env);
         if (r.response) return r.response;
         if (r.error) return html(renderAuthorizeError(r.error), 400);
+        const cfg = await serverSettings(env);
         return html(renderAuthorizePage({ reqId: r.request.id, clientName: r.request.clientName, redirectHost: r.request.redirectHost, accessCodeRequired: cfg.accessCodeRequired }));
       }
       if (path === '/token' && method === 'POST') return await token(request, env, url.origin);
@@ -565,68 +561,12 @@ export default {
       if (path === '/api/login/start' && method === 'POST') return await loginStart(request, env, ctx);
       if (path === '/api/login/poll' && method === 'POST') return await loginPoll(request, env, ctx);
 
-      // Admin area
-      if ((path === '/admin' || path === '/admin/') && method === 'GET') return html(renderAdminPage({ configured: adminConfigured(env) }));
-      if (path === '/admin/login' && method === 'POST') {
-        return await adminLogin(request, env, () => {
-          stat(env, ctx, 'admin_signin_failed');
-          recordEvent(env, ctx, { kind: 'admin_signin_failed', detail: `Wrong username or password, from ${request.cf?.country || 'an unknown country'}` });
+      // Admin area (remote/admin-routes.js)
+      if (path === '/admin' || path.startsWith('/admin/')) {
+        return await handleAdmin(request, env, url, ctx, {
+          version: VERSION, html, stat, recordEvent, modeOf,
+          forgetTokens: (userId) => { if (userId) { skypeCache.delete(userId); graphCache.delete(userId); } else { skypeCache.clear(); graphCache.clear(); } },
         });
-      }
-      if (path.startsWith('/admin/')) {
-        // Cookie-authenticated changes need a custom header, which other sites cannot send (no CORS for /admin).
-        if (method === 'POST' && request.headers.get('X-Admin') !== '1') return json({ error: 'Missing X-Admin header.' }, 400);
-        if (path === '/admin/logout' && method === 'POST') return adminLogout();
-        if (!(await isAdmin(request, env))) return json({ error: 'Sign in at /admin.' }, 401);
-        const s = settings(env);
-        const mode = await modeOf(env);
-        const settingsView = { accessCodeRequired: s.accessCodeRequired, allowListSize: s.allowList.length, personalUrls: s.personalUrls, alerts: s.alerts, restricted: mode.restricted };
-        if ((path === '/admin/api/overview' || path === '/admin/stats') && method === 'GET') {
-          return json(await adminOverview(env, { version: VERSION, settings: settingsView, inactiveDays: INACTIVE_DAYS, access: { ...mode, ...(await accessSummary(env, mode)) } }));
-        }
-        if (path === '/admin/api/issues' && method === 'GET') {
-          const q = url.searchParams;
-          const pick = (k, re) => (re.test(q.get(k) || '') ? q.get(k) : null);
-          return json(await issuesReport(env, {
-            kind: pick('kind', /^[a-z_]{3,30}$/), key: pick('key', /^[0-9a-f]{64}$/), tool: pick('tool', /^teams_[a-z_]{2,40}$/), day: pick('day', /^\d{4}-\d{2}-\d{2}$/),
-          }));
-        }
-        if (path === '/admin/api/access' && method === 'GET') return await accessOverview(env, mode, { adminKey: (await adminTeamsInfo(env)).key });
-        if (path === '/admin/api/access/my-groups' && method === 'GET') return await myGroups(env);
-        if (path === '/admin/api/teams' && method === 'GET') return await teamsStatus(env);
-        if (path === '/admin/api/teams/link/start' && method === 'POST') return await startLink(env);
-        if (path === '/admin/api/teams/link/poll' && method === 'POST') return await pollLink(env);
-        if (path === '/admin/api/teams/unlink' && method === 'POST') return await unlink(env);
-        if (path === '/admin/api/access/mode' && method === 'POST') return await setMode(request, env, mode);
-        if (path === '/admin/api/access/groups' && method === 'POST') return await addGroup(request, env);
-        if (path === '/admin/api/access/groups/remove' && method === 'POST') return await removeGroup(request, env);
-        if (path === '/admin/api/access/invites' && method === 'POST') return await createInvite(request, env, url.origin);
-        const inv = path.match(/^\/admin\/api\/access\/invites\/([0-9a-f]{64})\/revoke$/);
-        if (inv && method === 'POST') return await revokeInvite(env, inv[1]);
-        const acc = path.match(/^\/admin\/api\/access\/people\/([0-9a-f]{64})\/(approve|block|remove|unblock)$/);
-        if (acc && method === 'POST') {
-          if (acc[2] === 'block' || acc[2] === 'remove') skypeCache.clear();
-          return await personAccess(env, acc[1], acc[2], { adminKey: (await adminTeamsInfo(env)).key });
-        }
-        const end = path.match(/^\/admin\/api\/connections\/([0-9a-f]{64})\/end$/);
-        if (end && method === 'POST') {
-          skypeCache.delete(end[1]);
-          stat(env, ctx, 'admin_ended_connection');
-          return await endConnection(env, end[1]);
-        }
-        const p = path.match(/^\/admin\/api\/person\/([^/]+)(?:\/(csv|end|limit))?$/);
-        if (p) {
-          const key = decodeURIComponent(p[1]);
-          if (!p[2] && method === 'GET') return await adminPerson(env, key, { inactiveDays: INACTIVE_DAYS });
-          if (p[2] === 'csv' && method === 'GET') return await personCsvResponse(env, key);
-          if (p[2] === 'end' && method === 'POST') {
-            skypeCache.clear();
-            stat(env, ctx, 'admin_ended_connection');
-            return await endPerson(env, key);
-          }
-          if (p[2] === 'limit' && method === 'POST') return await setPersonLimit(request, env, key);
-        }
-        return json({ error: 'Not found' }, 404);
       }
       if (path === '/mcp' || path.startsWith('/mcp/')) return await handleMcp(request, env, url, ctx);
       return json({ error: 'Not found' }, 404);
@@ -640,18 +580,19 @@ export default {
     ctx.waitUntil(cleanup(env));
     // Optional: send the dashboard's alerts to a webhook (Slack, Discord, ntfy, ...). The server cannot post to Teams:
     // every Teams sign-in is encrypted with its owner's own key.
-    if (env.ALERT_WEBHOOK_URL) {
-      ctx.waitUntil((async () => {
-        const s = settings(env);
-        const mode = await modeOf(env);
-        const o = await adminOverview(env, {
-          version: VERSION, inactiveDays: INACTIVE_DAYS, access: { ...mode, ...(await accessSummary(env, mode)) },
-          settings: { accessCodeRequired: s.accessCodeRequired, allowListSize: s.allowList.length, personalUrls: s.personalUrls, alerts: s.alerts, restricted: mode.restricted },
-        });
-        if (!o.alerts.length) return;
-        const text = `Teams Personal MCP: ${o.alerts.length} alert(s)\n` + o.alerts.map((a) => `- ${a.text}`).join('\n');
-        await fetch(env.ALERT_WEBHOOK_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, content: text }) });
-      })().catch(() => {}));
-    }
+    ctx.waitUntil((async () => {
+      const s = await serverSettings(env);
+      if (!s.alertWebhook) return;
+      const mode = await modeOf(env);
+      const counts = await accessCounts(env, mode);
+      const o = await adminOverview(env, {
+        version: VERSION,
+        settings: { ...settingsView(s), restricted: mode.restricted, dailyCap: s.dailyCap, inactiveDays: s.inactiveDays },
+        access: { restricted: mode.restricted, waiting: counts.requests + counts.review },
+      });
+      if (!o.alerts.length) return;
+      const text = `Teams Personal MCP: ${o.alerts.length} alert(s)\n` + o.alerts.map((a) => `- ${a.text}`).join('\n');
+      await fetch(s.alertWebhook, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, content: text }) });
+    })().catch(() => {}));
   },
 };

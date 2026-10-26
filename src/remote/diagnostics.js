@@ -93,7 +93,7 @@ export async function issueDays(env, now = Date.now()) {
  * The Issues view: a day-by-day strip, a root-cause summary per kind, and the matching events.
  * Filters: kind, key (account hash), tool, day.
  */
-export async function issuesReport(env, { kind = null, key = null, tool = null, day = null, now = Date.now() } = {}) {
+export async function issuesReport(env, { kind = null, key = null, tool = null, day = null, page = 1, size = 25, now = Date.now() } = {}) {
   const since = now - KEEP_DAYS * DAY_MS;
   const rows = (await env.DB.prepare('SELECT at, day, kind, account_hash, user_id, tool, detail FROM diag_events WHERE at >= ? ORDER BY at DESC LIMIT 5000').bind(since).all()).results || [];
   const people = new Map(((await env.DB.prepare('SELECT account_hash, name FROM people').all()).results || []).map((p) => [p.account_hash, p.name]));
@@ -123,10 +123,12 @@ export async function issuesReport(env, { kind = null, key = null, tool = null, 
     };
   }).filter(Boolean);
 
-  const events = scoped.filter((r) => !kind || r.kind === kind).slice(0, 300).map((r) => ({
+  const matching = scoped.filter((r) => !kind || r.kind === kind);
+  const events = matching.slice((page - 1) * size, page * size).map((r) => ({
     at: new Date(r.at).toISOString(), kind: r.kind, label: ISSUE_KINDS[r.kind]?.label || r.kind,
     key: r.account_hash, person: nameOf(r.account_hash), tool: r.tool, detail: r.detail,
   }));
 
-  return { days: strip, summary, events, filters: { kind, key, tool, day }, keepDays: KEEP_DAYS, kinds: ISSUE_KINDS };
+  const personName = key ? nameOf(key) : null;
+  return { days: strip, summary, events, total: matching.length, page, size, personName, filters: { kind, key, tool, day }, keepDays: KEEP_DAYS, kinds: ISSUE_KINDS };
 }

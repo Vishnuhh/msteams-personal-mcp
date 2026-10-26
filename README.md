@@ -211,21 +211,23 @@ Personal Microsoft accounts have no company domain, so the server decides access
 - **Your Teams account.** Link it once (a sign-in code, like everyone else's). It always has access, and
   the Access page uses it to list your group chats. It is sealed under a key derived from `KEY_SALT` and
   `ADMIN_PASSWORD`, used only for that list, and changing the admin password unlinks it.
-- **Teams groups.** Search your group chats and click **Add** (or paste a chat id, `19:…@thread.v2`).
+- **Groups.** Search your group chats and click **Add** (or paste a chat id, `19:…@thread.v2`).
   Members get in automatically. Membership is checked with the person's own sign-in when they connect
-  and again once a day, so leaving the group ends their access.
-- **Invite links.** For people outside your groups. Set how many uses and how many days; whoever signs
-  in through the link keeps access until you remove them.
-- **Waiting.** Anyone else is refused, their Microsoft sign-in is not stored, and they appear here
-  with **Approve** and **Block**. Connections that existed before access was restricted keep working
-  and are listed here too, until you approve or remove them.
+  and again once a day, so leaving the group ends their access. Open a group to see who got in through it.
+- **Invites.** For people outside your groups. Set how many uses and how many days, and add uses or days
+  later; whoever signs in through the link keeps access until you remove them.
+- **Requests.** Anyone else is refused, their Microsoft sign-in is not stored, and they appear here
+  with **Approve** and **Block** (one at a time or in bulk). Connections that existed before access was
+  restricted keep working and are listed under **Under review** until you approve or remove them.
 
 Access is restricted by default once admin sign-in is set up; without it, the server is open to any
 personal Microsoft account. You can switch between **Restricted** and **Open** on the Access page.
 
 ### 8. (Optional) Server settings
 
-Set these as Wrangler vars or secrets (`npx wrangler secret put NAME`). All are optional.
+Set these as Wrangler vars or secrets (`npx wrangler secret put NAME`). All are optional. The admin page
+(**Settings**) can override personal URLs, new-connection notes, the access code, the daily change cap,
+how long unused connections last and the alert webhook; its values win over the variables.
 
 | Setting | Effect |
 |---|---|
@@ -234,9 +236,16 @@ Set these as Wrangler vars or secrets (`npx wrangler secret put NAME`). All are 
 | `DISABLE_PERSONAL_URLS` | `true` = connectors only: personal URLs are refused and no longer offered. |
 | `NEW_CONNECTION_ALERTS` | `false` = don't post a note to the user's Teams Notes on each new connection (on by default). |
 | `BRAND_LOGO`, `BRAND_NAME`, `BRAND_URL` | Your organisation's logo in the home page's top bar. Put the image in a static-assets folder (`[assets] directory = "./public"` in `wrangler.toml`), set `BRAND_LOGO` to its path (e.g. `/brand/logo.webp`), `BRAND_NAME` to its alt text and optionally `BRAND_URL` (https) to link it. |
-| `ADMIN_TOKEN` (secret) | Enables `GET /admin/stats` (anonymous counts) with `Authorization: Bearer <token>`. |
+| `ALERT_WEBHOOK_URL` (secret) | Posts the dashboard's alerts once a night to a Slack, Discord or ntfy webhook. |
+| `ADMIN_TOKEN` (secret) | Read-only access to `GET /admin/stats` and `GET /admin/api/*` with `Authorization: Bearer <token>`, for scripts. Changes always need a signed-in admin. |
 
-Connections unused for 90 days end automatically; a nightly job (cron in `wrangler.toml`) removes stale data.
+Connections unused for 90 days (or the number set in Settings) end automatically; a nightly job (cron in
+`wrangler.toml`) removes stale data.
+
+**Admin sign-in security.** Sessions are stored on the server: they end after 30 minutes without use, after
+8 hours, at sign-out, or when the admin password changes. **Settings → Security** turns on two-factor sign-in
+(any authenticator app), lists signed-in sessions and signs out everywhere else. **Settings → Audit log** lists
+every change made on the admin page for 180 days.
 
 ### 9. Share it
 
