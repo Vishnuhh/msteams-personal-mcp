@@ -107,6 +107,7 @@ const partnerStore = {
     await (await caches.open('partners')).put(await partnerUrl(key), new Response(value, { headers: { 'Cache-Control': `max-age=${PARTNER_TTL_S}` } }));
   },
 };
+const CHAT_INDEX_INFO = 'chat-index-v1';
 
 // Code mode (teams_run_code): QuickJS loads once per isolate, on the first program.
 const runCode = codeRunner(() => import('./remote/quickjs.js').then((m) => m.loadQuickJS()));
@@ -396,7 +397,16 @@ async function handleMcp(request, env, url, ctx) {
     usage.add('throttled');
     events.push({ kind: 'throttled', tool: currentTool, detail: `${info?.area || 'Microsoft'} · HTTP ${info?.status ?? 429} · asked to wait ${info?.retryAfter ?? '?'}s · ${info?.retrying ? 'retried automatically' : 'gave up'}` });
   };
-  const client = createTeamsClient(getSkypeToken, { onTeamsCall: () => usage.add('teams_call'), onThrottled, getGraphToken, partnerStore });
+  // find_chat's index of this person's chats (ids, chat and people names, types: about 180 bytes a chat) lives in the same
+  // cache, per connection and sealed with the connection's own access key, like the sign-in in the database.
+  const chatIndex = {
+    get: async (key) => {
+      const sealed = await partnerStore.get(`${key}|${userId}`);
+      return sealed ? openJson(accessKey, salt(env), CHAT_INDEX_INFO, sealed) : null;
+    },
+    put: async (key, value) => partnerStore.put(`${key}|${userId}`, await sealJson(accessKey, salt(env), CHAT_INDEX_INFO, value)),
+  };
+  const client = createTeamsClient(getSkypeToken, { onTeamsCall: () => usage.add('teams_call'), onThrottled, getGraphToken, partnerStore, chatIndex });
   // Group members are re-checked once a day, in the background; leaving every access group ends their connections.
   if (access === 'recheck') ctx.waitUntil(recheckMember(env, client, row.account_hash, now).catch(() => {}));
   // Date-level last use, written at most once a day; backfill the account hash and name for older connections.

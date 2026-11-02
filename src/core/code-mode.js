@@ -12,7 +12,7 @@ export const CODE_LIMITS = {
   budget: 45,
   costRead: 3, // a read action: one or two calls to Microsoft
   costHeavy: 30, // a cross-chat read fans out to many chats
-  costChats: 15, // list_chats / find_chat: the list, contacts, and up to 6 name lookups (two requests each)
+  costChats: 25, // list_chats / find_chat: up to 10 pages of chats, contacts, and up to 6 name lookups (two requests each)
   ticks: 30, // about 10 ms of computing on Cloudflare
   memoryBytes: 32 * 1024 * 1024,
   timeoutMs: 25_000,

@@ -5,6 +5,26 @@ What changed in each release. Newest first. The server shows this page at `/chan
 Format: every release has a `## [version] - date` heading, one summary line, and short bullets under
 Added, Changed, Fixed or Security. A release cannot be deployed without its entry (`npm test` checks it).
 
+## [0.12.2] - 2026-11-02
+
+Finding a chat now covers all of a person's chats, however many there are, and can look at only groups or only 1:1 chats.
+
+### Added
+- `type` on list_chats and find_chat: `"group"` for group chats only, `"chat"` for 1:1 chats only.
+- `offset` on list_chats, to page through older chats.
+- `limit` on find_chat (default 20). The answer also says how many matched (`total`), how many chats were searched and
+  whether that was all of them (`allSearched`).
+
+### Changed
+- find_chat keeps a small index of your chats (names and ids only), so a search usually costs one request to
+  Microsoft however many chats you have. On the remote server it is sealed with your own key, like your sign-in.
+  Older chats are read only when nothing newer matches, at most 1,000 per search; the next search goes on from there.
+- Searching only groups needs no name lookups for 1:1 chats, so it is faster.
+
+### Fixed
+- Finding a chat no longer stops at your 100 most recent chats.
+- Code mode: the example in the description now matches what find_chat returns.
+
 ## [0.12.1] - 2026-11-02
 
 Far fewer "Teams is limiting requests" errors when listing or finding chats.

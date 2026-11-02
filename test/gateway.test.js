@@ -32,7 +32,7 @@ test('help lists every action with its arguments and which gateway runs it', asy
 test('teams_query runs reading actions only; teams_do runs changes only', async () => {
   const { call, calls } = setup();
   assert.equal(json(await call('teams_query', { action: 'list_chats', args: { limit: 5 } })).ok, 'listChats');
-  assert.deepEqual(calls[0], { method: 'listChats', args: [{ limit: 5 }] });
+  assert.deepEqual(calls[0], { method: 'listChats', args: [{ limit: 5, offset: undefined, type: undefined }] });
 
   const refused = await call('teams_query', { action: 'send_message', args: { conversationId: '19:x@thread.v2', text: 'hi' } });
   assert.equal(refused.isError, true);

@@ -8,6 +8,8 @@ export const ok = (data) => ({ content: [{ type: 'text', text: typeof data === '
 export const fail = (e) => ({ isError: true, content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }] });
 export const wrap = (fn) => async (args) => { try { return ok(await fn(args ?? {})); } catch (e) { return fail(e); } };
 
+const chatType = z.enum(['group', 'chat']).optional().describe('Only group chats ("group") or only 1:1 chats ("chat"). Default: all.');
+
 const timeArg = (what) => z.string().optional().describe(
   `${what}. ISO 8601 (e.g. 2026-10-20T09:00:00+05:30) or relative: "30m", "24h", "7d".`,
 );
@@ -107,14 +109,24 @@ export function registerTeamsTools(server, client, { beforeCall, afterCall, read
     server.registerTool(name, { ...config, description, annotations: ANNOTATIONS[kind] }, (args) => run(name, kind, handler, args));
   };
   reg('teams_list_chats', {
-    description: 'List recent Teams personal conversations (1:1, group, meeting) with id, title (1:1 chats show the other person\'s name), unread flag and last-message preview. Use the id with teams_get_messages.',
-    inputSchema: { limit: z.number().int().min(1).max(100).optional().describe('Max chats (default 30)') },
-  }, wrap(({ limit }) => client.listChats({ limit })));
+    description: 'List recent Teams personal conversations (1:1, group, meeting), newest first, with id, title (1:1 chats show the other person\'s name), unread flag and last-message preview. Use the id with teams_get_messages. ' +
+      'To find a chat by name use teams_find_chat, which also searches older chats.',
+    inputSchema: {
+      limit: z.number().int().min(1).max(100).optional().describe('Max chats (default 30)'),
+      offset: z.number().int().min(0).optional().describe('Skip this many chats first, to page through older ones (default 0)'),
+      type: chatType,
+    },
+  }, wrap(({ limit, offset, type }) => client.listChats({ limit, offset, type })));
 
   reg('teams_find_chat', {
-    description: 'Find conversations by group name or, for 1:1 chats, the other person\'s name.',
-    inputSchema: { query: z.string().min(1) },
-  }, wrap(({ query }) => client.findChats(query)));
+    description: 'Find conversations by group name or, for 1:1 chats, the other person\'s name, across all chats including old ones. ' +
+      'Returns { chats, total, searched, allSearched }; if allSearched is false and nothing matched, search again to look further back.',
+    inputSchema: {
+      query: z.string().min(1),
+      type: chatType,
+      limit: z.number().int().min(1).max(100).optional().describe('Max matches returned, newest first (default 20; total says how many matched)'),
+    },
+  }, wrap(({ query, type, limit }) => client.findChats(query, { type, limit })));
 
   reg('teams_get_chat_members', {
     description: 'List the people in a conversation with their names and ids. Each member has a ready-to-use "mentionAs" token for @mentions in teams_send_message.',
@@ -355,8 +367,7 @@ export function registerTeamsTools(server, client, { beforeCall, afterCall, read
         'Call actions as `await teams.<action>({ ...args })` (same names and arguments as in help, read actions only); each returns the action\'s JSON. ' +
         '`return` the answer (keep it small); `console.log(...)` adds notes. No network, files or timers. ' +
         `Budget per run: ${CODE_LIMITS.budget} Microsoft requests (${CODE_LIMITS.costRead} per action, ${CODE_LIMITS.costChats} for list_chats and find_chat, ${CODE_LIMITS.costHeavy} for cross-chat ones: search_messages, get_unread, get_mentions, get_my_recent_messages). ` +
-        'Call list_chats or find_chat once and reuse the result. ' +
-        'and about 10 ms of computing. Use Promise.all to read chats in parallel. ' +
+        'Call list_chats or find_chat once and reuse the result. A run also gets about 10 ms of computing. Use Promise.all to read chats in parallel. ' +
         'Example: const { chats } = await teams.find_chat({ query: "Squad" }); const r = await Promise.all(chats.slice(0, 3).map((c) => teams.get_messages({ conversationId: c.id, since: "24h" }))); return r.map((m, i) => ({ chat: chats[i].title, count: m.messages.length }));',
       inputSchema: { code: z.string().min(1).max(CODE_LIMITS.codeChars).describe('The body of an async function: use await and return') },
     }, async ({ code }) => {

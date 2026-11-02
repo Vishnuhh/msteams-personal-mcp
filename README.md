@@ -384,8 +384,8 @@ app also revokes it. You can also remove the app's access in your Microsoft acco
 
 | Tool | What it does | Local | Remote |
 |------|--------------|:-----:|:------:|
-| `teams_list_chats` | Recent conversations with id, title (1:1 chats show the person's name), unread flag and last-message preview | ✓ | ✓ |
-| `teams_find_chat` | Find a conversation by group name or person's name | ✓ | ✓ |
+| `teams_list_chats` | Recent conversations with id, title (1:1 chats show the person's name), unread flag and last-message preview; `type` shows only groups or only 1:1 chats, `offset` pages back | ✓ | ✓ |
+| `teams_find_chat` | Find a conversation by group name or person's name across all your chats; `type` searches only groups or only 1:1 chats | ✓ | ✓ |
 | `teams_get_chat_members` | People in a chat, with names and a ready `@mention` token | ✓ | ✓ |
 | `teams_get_messages` | Messages in a chat, newest first, with @mentions, reactions, replies (quoted message), files, links, forwards, edits and calls. `since` / `before` accept ISO dates or `30m`, `24h`, `7d` | ✓ | ✓ |
 | `teams_get_message` | One message by id, with full details | ✓ | ✓ |
@@ -477,6 +477,9 @@ Clients that support MCP prompts (Claude Code `/` menu, Claude desktop "+" menu,
   - A database dump alone, or the person running the server, can't decrypt anyone's tokens
     without that user's URL.
   - Pending sign-in codes are sealed the same way and expire after 15 minutes.
+  - To find chats quickly, the server keeps a list of your chats' ids and names in Cloudflare's cache (not the
+    database), sealed the same way, for up to 30 days. Who the other person in each 1:1 chat is (their Teams id, and
+    their display name when it came from their messages) is cached there too, not sealed, for 30 days.
   - Per-IP rate limits protect the public endpoints: 5 sign-in starts, 40 sign-in checks and 300 MCP
     requests per minute (Cloudflare rate-limit bindings in `wrangler.toml`).
   - Per-person limits: 120 requests a minute, 10 multi-chat searches a minute, 10 changes a minute and

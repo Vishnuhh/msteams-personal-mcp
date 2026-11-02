@@ -45,8 +45,19 @@ const TITLE_FANOUT = 3;
 
 // Module-level caches survive across requests in the same process / Worker isolate.
 const contactsCache = new Map(); // selfMri -> { at, names: Map<mri, displayName> }
-const convCache = new Map(); // `${selfMri}|${limit}` -> { at, list } (short TTL; spares Teams on bursts of tool calls)
+const convCache = new Map(); // selfMri -> { at, list, next } (short TTL; spares Teams on bursts of tool calls)
 const CONV_TTL_MS = 20 * 1000;
+// Teams returns chats newest first, 100 per page; older pages follow _metadata.backwardLink. There is no cap on how
+// many chats a user has: each call reads at most PAGES_PER_CALL pages (Workers allow 50 subrequests per request).
+const CHAT_PAGE = 100;
+const PAGES_PER_CALL = 10;
+const CHAT_TYPES = { group: 'group', chat: 'one-on-one' }; // the `type` filter of list/find
+// find_chat searches a compact index of the user's chats: { builtAt, chats: [{ id, title, type, lastActive }], next }.
+// Every search reads the newest page and merges it in (active chats always move to the newest page), so a search costs
+// about one request however many chats there are. Older pages are read only when a search finds nothing, from `next`
+// on, and are remembered. hooks.chatIndex ({ get(key), put(key, value) }) keeps the index beyond the process.
+const chatIndexCache = new Map(); // selfMri -> index
+const INDEX_REBUILD_MS = 7 * 86400e3; // a full re-read now and then drops chats the user left
 const selfNameCache = new Map(); // selfMri -> the user's own display name
 // "<selfMri>|<1:1 conversationId>" -> other member's mri. Keyed per user: on the shared server both
 // people in a 1:1 chat may be users, and each must see the *other* person.
@@ -288,7 +299,7 @@ export function createTeamsClient(getSkypeToken, hooks = {}) {
 
   async function forgetChats() {
     const self = await me();
-    for (const k of convCache.keys()) if (k.startsWith(`${self}|`)) convCache.delete(k);
+    convCache.delete(self);
   }
 
   async function me() {
@@ -431,54 +442,90 @@ export function createTeamsClient(getSkypeToken, hooks = {}) {
 
   // ------------------------------------------------------------------ chats
 
-  async function rawConversations(limit) {
-    const key = `${await me()}|${limit}`;
-    const hit = convCache.get(key);
-    if (hit && Date.now() - hit.at < CONV_TTL_MS) return hit.list;
-    const data = await request(
-      `${CHATSVC}/conversations?startTime=0&pageSize=${Math.min(limit, 100)}&view=msnp24Equivalent&targetType=${encodeURIComponent(TARGET_TYPES)}`,
-    );
-    const list = (data.conversations || []).slice(0, limit);
-    convCache.set(key, { at: Date.now(), list });
-    return list;
+  const firstChatsPage = () => `${CHATSVC}/conversations?startTime=0&pageSize=${CHAT_PAGE}&view=msnp24Equivalent&targetType=${encodeURIComponent(TARGET_TYPES)}`;
+
+  /** One page of chats from `url`, and the link to the next (older) page, or null after the oldest. */
+  async function chatsPage(url) {
+    const data = await request(url);
+    const page = data.conversations || [];
+    const next = data._metadata?.backwardLink;
+    return { page, next: page.length && next && /(^|\.)teams\.live\.com$/.test(new URL(next).hostname) ? next : null };
   }
 
-  async function listChats({ limit = 30, resolveNames = true } = {}) {
+  /**
+   * The `limit` most recent chats. Pages fetched in the last few seconds are reused, so paging further only fetches
+   * the pages not fetched yet, at most PAGES_PER_CALL per call (fewer chats come back when that stops it).
+   */
+  async function rawConversations(limit) {
     const self = await me();
-    const chats = (await rawConversations(limit)).map((c) => {
-      const lm = c.lastMessage;
-      const lastFromOther = lm && mriFromUrl(lm.from) !== self && lm.imdisplayname;
-      const type = conversationType(c);
-      const title = topicTitle(c)
-        || (type === 'one-on-one' && lastFromOther ? lm.imdisplayname : null)
-        || (c.id === '48:notes' ? 'Notes (self chat)' : null)
-        || (c.id?.startsWith('19:stream01_') ? 'System activity stream' : null)
-        || c.id;
-      return {
-        id: c.id,
-        title,
-        type,
-        unread: isUnread(c, self),
-        readUpTo: readHorizon(c),
-        lastMessage: lm?.content !== undefined ? {
-          from: lm.imdisplayname || mriFromUrl(lm.from),
-          isMine: mriFromUrl(lm.from) === self,
-          time: lm.composetime || lm.originalarrivaltime,
-          text: stripHtml(lm.content).slice(0, 200),
-        } : null,
-      };
-    });
+    let hit = convCache.get(self);
+    if (!hit || Date.now() - hit.at >= CONV_TTL_MS) {
+      hit = { at: Date.now(), list: [], next: firstChatsPage() };
+      convCache.set(self, hit);
+    }
+    for (let pages = 0; hit.list.length < limit && hit.next && pages < PAGES_PER_CALL; pages++) {
+      const { page, next } = await chatsPage(hit.next);
+      hit.list.push(...page);
+      hit.next = next;
+    }
+    return hit.list.slice(0, limit);
+  }
+
+  function toChat(c, self) {
+    const lm = c.lastMessage;
+    const lastFromOther = lm && mriFromUrl(lm.from) !== self && lm.imdisplayname;
+    const type = conversationType(c);
+    const title = topicTitle(c)
+      || (type === 'one-on-one' && lastFromOther ? lm.imdisplayname : null)
+      || (c.id === '48:notes' ? 'Notes (self chat)' : null)
+      || (c.id?.startsWith('19:stream01_') ? 'System activity stream' : null)
+      || c.id;
+    return {
+      id: c.id,
+      title,
+      type,
+      unread: isUnread(c, self),
+      readUpTo: readHorizon(c),
+      lastMessage: lm?.content !== undefined ? {
+        from: lm.imdisplayname || mriFromUrl(lm.from),
+        isMine: mriFromUrl(lm.from) === self,
+        time: lm.composetime || lm.originalarrivaltime,
+        text: stripHtml(lm.content).slice(0, 200),
+      } : null,
+    };
+  }
+
+  /**
+   * Chats newest first: `limit` of them after skipping `offset`. With `type` ('group', or 'chat' for 1:1), only chats
+   * of that kind, reading older pages until there are enough.
+   */
+  async function listChats({ limit = 30, offset = 0, resolveNames = true, type = null } = {}) {
+    const self = await me();
+    const wanted = CHAT_TYPES[type];
+    if (type && !wanted) throw new Error(`Unknown chat type "${type}". Use "group" or "chat".`);
+    const end = offset + limit;
+    let raw;
+    if (!wanted) raw = (await rawConversations(end)).slice(offset);
+    else {
+      const hit = convCache.get(self);
+      const cached = hit && Date.now() - hit.at < CONV_TTL_MS ? hit.list.length : 0; // free to look at
+      for (let depth = CHAT_PAGE; ; depth += CHAT_PAGE) {
+        const all = await rawConversations(depth);
+        const ofType = all.filter((c) => conversationType(c) === wanted);
+        if (ofType.length >= end || all.length < depth || depth >= cached + PAGES_PER_CALL * CHAT_PAGE) { raw = ofType.slice(offset, end); break; }
+      }
+    }
+    const chats = raw.map((c) => toChat(c, self));
     return resolveNames ? resolveTitles(chats) : chats;
   }
 
   /** Every group chat the user is in, from their most recent chats (up to pages × 100), for pickers. */
   async function listGroupChats({ pages = 5 } = {}) {
     const out = [];
-    let url = `${CHATSVC}/conversations?startTime=0&pageSize=100&view=msnp24Equivalent&targetType=${encodeURIComponent(TARGET_TYPES)}`;
+    let url = firstChatsPage();
     for (let i = 0; i < pages && url; i++) {
-      const data = await request(url);
-      const list = data.conversations || [];
-      for (const c of list) {
+      const { page, next } = await chatsPage(url);
+      for (const c of page) {
         if (conversationType(c) !== 'group') continue;
         const lm = c.lastMessage;
         out.push({
@@ -488,18 +535,76 @@ export function createTeamsClient(getSkypeToken, hooks = {}) {
           lastFrom: lm?.imdisplayname || null,
         });
       }
-      const next = data._metadata?.backwardLink;
-      url = list.length && next && /(^|\.)teams\.live\.com$/.test(new URL(next).hostname) ? next : null;
+      url = next;
     }
     return out;
   }
 
-  async function findChats(query, { limit = 100 } = {}) {
+  const indexEntry = (c) => ({ id: c.id, title: c.title, type: c.type, lastActive: c.lastMessage?.time || c.lastActive || null });
+
+  async function loadChatIndex(self) {
+    if (chatIndexCache.has(self)) return chatIndexCache.get(self);
+    const stored = await Promise.resolve(hooks.chatIndex?.get(`chats|${self}`)).catch(() => null);
+    try { return stored ? JSON.parse(stored) : null; } catch { return null; }
+  }
+
+  async function saveChatIndex(self, index) {
+    chatIndexCache.set(self, index);
+    await Promise.resolve(hooks.chatIndex?.put(`chats|${self}`, JSON.stringify(index))).catch(() => {});
+  }
+
+  /**
+   * Chats whose name matches (group name, or the other person's name for 1:1 chats), newest first, from all of the
+   * user's chats. `type` ('group' or 'chat') searches only group chats or only 1:1 chats.
+   * Returns { chats (the newest `limit` matches), total, searched, allSearched }: allSearched is false when older chats
+   * are still to be read (search again).
+   */
+  async function findChats(query, { type = null, limit = 20 } = {}) {
     const q = query.toLowerCase();
-    const chats = await listChats({ limit, resolveNames: false });
-    // Resolve names first so 1:1 chats can be found by the person's name.
-    await resolveTitles(chats, { max: MAX_TITLE_LOOKUPS });
-    return chats.filter((c) => c.title?.toLowerCase().includes(q) || c.id.toLowerCase().includes(q));
+    if (type && !CHAT_TYPES[type]) throw new Error(`Unknown chat type "${type}". Use "group" or "chat".`);
+    const self = await me();
+    const fits = (c) => (!type || c.type === CHAT_TYPES[type]) && (c.title?.toLowerCase().includes(q) || c.id.toLowerCase().includes(q));
+
+    // The newest chats (one request, or none when just fetched), with 1:1 names resolved.
+    const recent = await listChats({ limit: CHAT_PAGE, resolveNames: false });
+    const unread = new Map(recent.map((c) => [c.id, c.unread]));
+    let index = await loadChatIndex(self);
+    if (!index || Date.now() - index.builtAt > INDEX_REBUILD_MS) {
+      // Start from the pages already fetched for the newest chats.
+      const fetched = convCache.get(self);
+      index = { builtAt: Date.now(), chats: (fetched?.list.slice(CHAT_PAGE) || []).map((c) => indexEntry(toChat(c, self))), next: fetched?.next ?? null };
+    }
+    // 1:1 names: those the index already has, then a few lookups (none when only groups are searched).
+    const named = new Map(index.chats.filter((c) => !isIdLike(c.title, c.id)).map((c) => [c.id, c.title]));
+    for (const c of recent) if (isIdLike(c.title, c.id) && named.has(c.id)) c.title = named.get(c.id);
+    if (type !== 'group') await resolveTitles(recent, { max: MAX_TITLE_LOOKUPS });
+    const merge = (newer, older) => {
+      const seen = new Set(newer.map((c) => c.id));
+      return [...newer, ...older.filter((c) => !seen.has(c.id))];
+    };
+    index.chats = merge(recent.map(indexEntry), index.chats);
+
+    let found = index.chats.filter(fits);
+    // Nothing yet: read older chats, from where the index stopped, until something matches.
+    for (let pages = 0; !found.length && index.next && pages < PAGES_PER_CALL; pages++) {
+      let page;
+      try { ({ page, next: index.next } = await chatsPage(index.next)); } catch (e) {
+        if (cooling()) throw e;
+        index.builtAt = 0; // the link went stale: read everything again next time
+        break;
+      }
+      // No name lookups here (they would multiply by pages): group names and 1:1 names from the person's last message.
+      const older = page.map((c) => toChat(c, self));
+      index.chats = merge(index.chats, older.map(indexEntry));
+      found = older.filter(fits).map(indexEntry);
+    }
+    await saveChatIndex(self, index);
+    return {
+      chats: found.slice(0, limit).map((c) => (unread.has(c.id) ? { ...c, unread: unread.get(c.id) } : c)),
+      total: found.length,
+      searched: index.chats.length,
+      allSearched: !index.next,
+    };
   }
 
   // ------------------------------------------------------------------ messages
