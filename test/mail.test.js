@@ -84,7 +84,7 @@ t('a failed send is reported with a hint and does not mark the limit as warned',
   assert.equal(t2.ok, false);
 });
 
-test('the daily summary covers the previous day with its change and open alerts', async () => {
+t('the daily summary covers the previous day with its change and open alerts', async () => {
   const m = mailer();
   const o = {
     daily: [{ day: '2026-10-24', requests: 100, toolCalls: 200, changes: 3, errors: 1 }, { day: '2026-10-25', requests: 150, toolCalls: 300, changes: 5, errors: 2 }, { day: '2026-10-26', requests: 4, toolCalls: 6, changes: 0, errors: 0 }],
