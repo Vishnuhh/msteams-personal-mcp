@@ -1,6 +1,6 @@
 {
   "name": "msteams-personal-mcp",
-  "version": "0.11.1",
+  "version": "0.12.0",
   "description": "MCP server for Microsoft Teams personal accounts (teams.live.com) — local (stdio) or remote (Cloudflare Workers)",
   "type": "module",
   "main": "src/index.js",
@@ -15,7 +15,7 @@
     "db:migrate:local": "wrangler d1 migrations apply msteams-personal-mcp --local",
     "db:migrate:remote": "wrangler d1 migrations apply msteams-personal-mcp --remote",
     "deploy": "wrangler deploy",
-    "test": "node --test test/core.test.js test/oauth.test.js test/changelog.test.js test/limits.test.js test/admin.test.js test/usage.test.js test/access.test.js test/page.test.js test/files.test.js test/pdf.test.js test/mentions.test.js test/gateway.test.js test/diagnostics.test.js test/mail.test.js",
+    "test": "node --test test/core.test.js test/oauth.test.js test/changelog.test.js test/limits.test.js test/admin.test.js test/usage.test.js test/access.test.js test/page.test.js test/files.test.js test/pdf.test.js test/mentions.test.js test/gateway.test.js test/diagnostics.test.js test/mail.test.js test/codemode.test.js",
     "release": "node scripts/release.mjs"
   },
   "engines": {
@@ -32,7 +32,9 @@
   "license": "MIT",
   "dependencies": {
     "@cfworker/json-schema": "^4.1.1",
+    "@jitl/quickjs-ng-wasmfile-release-sync": "0.32.0",
     "@modelcontextprotocol/sdk": "^1.32.1",
+    "quickjs-emscripten-core": "0.32.0",
     "unpdf": "^1.9.1",
     "zod": "^4.6.7"
   },

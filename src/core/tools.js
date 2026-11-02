@@ -2,6 +2,7 @@
 import { z } from 'zod';
 import { REACTION_EMOJIS } from './emojis.js';
 import { fileToText, readableAs, toBase64, mb, LIMITS } from './files.js';
+import { CODE_LIMITS } from './code-mode.js';
 
 export const ok = (data) => ({ content: [{ type: 'text', text: typeof data === 'string' ? data : JSON.stringify(data, null, 2) }] });
 export const fail = (e) => ({ isError: true, content: [{ type: 'text', text: e instanceof Error ? e.message : String(e) }] });
@@ -64,8 +65,9 @@ function describeArgs(shape) {
  * options.beforeCall(name, kind) may throw to refuse a call (the remote server uses it for per-person limits).
  * options.afterCall(name, kind, { ms, bytes, isError, refused }) is told how each call went (usage counting).
  * options.notice() may return a line appended to every result (e.g. "refresh the connector").
+ * options.runCode(code, tools) runs a program in the code-mode sandbox (core/code-mode.js); without it there is no run_code.
  */
-export function registerTeamsTools(server, client, { beforeCall, afterCall, readPdf, notice } = {}) {
+export function registerTeamsTools(server, client, { beforeCall, afterCall, readPdf, notice, runCode } = {}) {
   const actions = new Map(); // short name ("read_file") -> { name, kind, description, inputSchema, handler }
 
   const withNotice = (result) => {
@@ -340,6 +342,44 @@ export function registerTeamsTools(server, client, { beforeCall, afterCall, read
     description: 'LEAVE a group chat. You stop receiving its messages and need someone to add you back. Only when the user explicitly asked.',
     inputSchema: { conversationId: z.string().min(1) },
   }, wrap(({ conversationId }) => client.leaveGroup(conversationId)));
+
+  // ---------------------------------------------------------------- code mode (read-only programs)
+  // Files are left out (images and documents are better read directly); so is anything that changes Teams.
+  const NOT_IN_CODE = new Set(['read_file', 'download_file', 'run_code']);
+  const codeActions = () => [...actions.entries()].filter(([short, a]) => (a.kind === 'read' || a.kind === 'heavy') && !NOT_IN_CODE.has(short));
+  if (runCode) {
+    action('teams_run_code', {
+      kind: 'read',
+      description: 'Run a short JavaScript program that calls several READ actions and returns only what you need, in one step. ' +
+        'Use it to combine or filter results (e.g. read several chats and count mentions) instead of many separate calls. ' +
+        'Call actions as `await teams.<action>({ ...args })` (same names and arguments as in help, read actions only); each returns the action\'s JSON. ' +
+        '`return` the answer (keep it small); `console.log(...)` adds notes. No network, files or timers. ' +
+        `Budget per run: ${CODE_LIMITS.budget} Microsoft requests (${CODE_LIMITS.costRead} per action, ${CODE_LIMITS.costHeavy} for cross-chat ones: search_messages, get_unread, get_mentions, get_my_recent_messages), ` +
+        'and about 10 ms of computing. Use Promise.all to read chats in parallel. ' +
+        'Example: const { chats } = await teams.find_chat({ query: "Squad" }); const r = await Promise.all(chats.slice(0, 3).map((c) => teams.get_messages({ conversationId: c.id, since: "24h" }))); return r.map((m, i) => ({ chat: chats[i].title, count: m.messages.length }));',
+      inputSchema: { code: z.string().min(1).max(CODE_LIMITS.codeChars).describe('The body of an async function: use await and return') },
+    }, async ({ code }) => {
+      let spent = 0;
+      const tools = Object.fromEntries(codeActions().map(([short, a]) => [short, async (args) => {
+        const cost = a.kind === 'heavy' ? CODE_LIMITS.costHeavy : CODE_LIMITS.costRead;
+        if (spent + cost > CODE_LIMITS.budget) {
+          throw new Error(`Request budget used up: ${short} needs ${cost} of the ${CODE_LIMITS.budget} Microsoft requests one run may make (${spent} used). Split the work across runs.`);
+        }
+        spent += cost;
+        const parsed = z.object(a.inputSchema).strict().safeParse(args);
+        if (!parsed.success) {
+          throw new Error(`Invalid arguments for ${short}: ${parsed.error.issues.map((x) => `${x.path.join('.') || 'args'} ${x.message}`).join('; ')}`);
+        }
+        const res = await run(a.name, a.kind, a.handler, parsed.data);
+        const text = res?.content?.find((c) => c.type === 'text')?.text ?? '';
+        if (res?.isError) throw new Error(text || `${short} failed`);
+        try { return JSON.parse(text); } catch { return text; }
+      }]));
+      const r = await runCode(code, tools);
+      const out = { ok: r.ok, ...(r.ok ? { result: r.result } : { error: r.error }), actionsCalled: r.calls, ...(r.logs.length ? { logs: r.logs } : {}) };
+      return r.ok ? ok(out) : fail(new Error(JSON.stringify(out, null, 2)));
+    });
+  }
 
   // ---------------------------------------------------------------- gateways (stable; new actions need no refresh)
   const helpFor = (kinds) => [...actions.entries()].filter(([, a]) => !kinds || kinds.includes(a.kind)).map(([short, a]) => ({

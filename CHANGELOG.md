@@ -5,6 +5,16 @@ What changed in each release. Newest first. The server shows this page at `/chan
 Format: every release has a `## [version] - date` heading, one summary line, and short bullets under
 Added, Changed, Fixed or Security. A release cannot be deployed without its entry (`npm test` checks it).
 
+## [0.12.0] - 2026-11-02
+
+Questions that need many chats are answered in one step.
+
+### Added
+- Code mode: Claude can run a short program (`run_code`, through `teams_query`) that reads several chats, filters and counts the results, and returns only the answer. Fewer steps, and much less of your Claude context used. It works in every connected app without reconnecting.
+
+### Security
+- Programs only read: they can't send, edit, delete or open files. They run sealed inside the server with no network, files or secrets, within tight limits (about 15 reads per run, 25 seconds), and every read counts toward your normal limits.
+
 ## [0.11.1] - 2026-10-26
 
 Fewer Microsoft slow-downs during searches.

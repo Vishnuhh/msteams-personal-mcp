@@ -413,6 +413,19 @@ app also revokes it. You can also remove the app's access in your Microsoft acco
 | `teams_query` | Run any read-only action by name, including newer ones without their own tool. `action: "help"` lists every action and its arguments | ✓ | ✓ |
 | `teams_do` | Run any action that changes Teams by name (your app asks before each one). New write features arrive here | ✓ | ✓ |
 
+### Code mode (`run_code`)
+
+For questions that need many reads ("which of my Squad chats mention the invoice since yesterday?"), Claude can
+run `teams_query` with `action: "run_code"`: a short JavaScript program that calls the read actions
+(`await teams.get_messages({ conversationId, since: "24h" })`), filters and counts in the program, and returns
+only the answer. One step instead of many, and far less of Claude's context used.
+
+- **Read-only.** Programs can't send, edit, delete or read files; changes still go through `teams_do`.
+- **Sealed.** Programs run in QuickJS (WebAssembly) inside the server: no network, files, timers or secrets.
+- **Limited.** Each run may make about 45 requests to Microsoft (15 ordinary reads, or one cross-chat search plus
+  a few reads), compute for about 10 ms and last 25 seconds. Every read counts toward the person's normal limits.
+- **Free.** It runs inside the same Worker on the Workers Free plan; no Dynamic Workers or paid plan.
+
 ### Staying up to date without reconnecting
 
 Apps (Claude, Cursor, VS Code) cache a server's tool list when they connect and don't reload it on their own.

@@ -9,6 +9,7 @@ import { z } from 'zod';
 import { startLogin, loginState, logout, hasSavedLogin, getSkypeToken, getGraphToken } from './auth.js';
 import { createTeamsClient } from './core/teams.js';
 import { registerTeamsTools, registerTeamsPrompts, wrap } from './core/tools.js';
+import { codeRunner } from './core/code-mode.js';
 import { LIMITS, isRiskyType, extOf, mb } from './core/files.js';
 import { readPdfLite, looksReadable } from './core/pdf.js';
 
@@ -60,7 +61,13 @@ server.registerTool('teams_logout', {
   inputSchema: {},
 }, wrap(async () => { logout(); return { signedOut: true }; }));
 
-registerTeamsTools(server, client, { readPdf });
+registerTeamsTools(server, client, {
+  readPdf,
+  runCode: codeRunner(async () => {
+    const [{ newQuickJSWASMModuleFromVariant }, variant] = await Promise.all([import('quickjs-emscripten-core'), import('@jitl/quickjs-ng-wasmfile-release-sync')]);
+    return newQuickJSWASMModuleFromVariant(variant.default);
+  }),
+});
 
 // Local only: save a shared file to this computer (Downloads/Teams), never overwriting an existing file.
 server.registerTool('teams_download_file', {

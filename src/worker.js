@@ -44,6 +44,7 @@ import { overview as adminOverview } from './remote/admin.js';
 import { handleAdmin } from './remote/admin-routes.js';
 import { serverSettings, settingsView, accessCodeOk } from './remote/settings.js';
 import { checkLimits, sendDailySummary } from './remote/alert-mail.js';
+import { codeRunner } from './core/code-mode.js';
 import { usageRecorder } from './remote/usage.js';
 import { readPdfLite, looksReadable, markdownPdfBody } from './core/pdf.js';
 import { eventStatements, recordEvent, cleanupStatement } from './remote/diagnostics.js';
@@ -92,6 +93,9 @@ function stat(env, ctx, metric) {
 
 // Must match the hourly entry in wrangler.toml [triggers] crons; the other entry is the nightly job.
 const HOURLY_CRON = '7 * * * *';
+
+// Code mode (teams_run_code): QuickJS loads once per isolate, on the first program.
+const runCode = codeRunner(() => import('./remote/quickjs.js').then((m) => m.loadQuickJS()));
 
 const scriptHashes = new Map();
 async function html(body, status = 200, { fonts = true } = {}) {
@@ -442,6 +446,7 @@ async function handleMcp(request, env, url, ctx) {
   registerTeamsTools(server, client, {
     readPdf: (bytes) => readPdf(env, bytes),
     notice,
+    runCode,
     beforeCall: (name, kind) => { currentTool = name; return guard(name, kind); },
     afterCall: (name, kind, info) => {
       usage.tool(name, kind, info);
