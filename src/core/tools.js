@@ -354,14 +354,15 @@ export function registerTeamsTools(server, client, { beforeCall, afterCall, read
         'Use it to combine or filter results (e.g. read several chats and count mentions) instead of many separate calls. ' +
         'Call actions as `await teams.<action>({ ...args })` (same names and arguments as in help, read actions only); each returns the action\'s JSON. ' +
         '`return` the answer (keep it small); `console.log(...)` adds notes. No network, files or timers. ' +
-        `Budget per run: ${CODE_LIMITS.budget} Microsoft requests (${CODE_LIMITS.costRead} per action, ${CODE_LIMITS.costHeavy} for cross-chat ones: search_messages, get_unread, get_mentions, get_my_recent_messages), ` +
+        `Budget per run: ${CODE_LIMITS.budget} Microsoft requests (${CODE_LIMITS.costRead} per action, ${CODE_LIMITS.costChats} for list_chats and find_chat, ${CODE_LIMITS.costHeavy} for cross-chat ones: search_messages, get_unread, get_mentions, get_my_recent_messages). ` +
+        'Call list_chats or find_chat once and reuse the result. ' +
         'and about 10 ms of computing. Use Promise.all to read chats in parallel. ' +
         'Example: const { chats } = await teams.find_chat({ query: "Squad" }); const r = await Promise.all(chats.slice(0, 3).map((c) => teams.get_messages({ conversationId: c.id, since: "24h" }))); return r.map((m, i) => ({ chat: chats[i].title, count: m.messages.length }));',
       inputSchema: { code: z.string().min(1).max(CODE_LIMITS.codeChars).describe('The body of an async function: use await and return') },
     }, async ({ code }) => {
       let spent = 0;
       const tools = Object.fromEntries(codeActions().map(([short, a]) => [short, async (args) => {
-        const cost = a.kind === 'heavy' ? CODE_LIMITS.costHeavy : CODE_LIMITS.costRead;
+        const cost = a.kind === 'heavy' ? CODE_LIMITS.costHeavy : short === 'list_chats' || short === 'find_chat' ? CODE_LIMITS.costChats : CODE_LIMITS.costRead;
         if (spent + cost > CODE_LIMITS.budget) {
           throw new Error(`Request budget used up: ${short} needs ${cost} of the ${CODE_LIMITS.budget} Microsoft requests one run may make (${spent} used). Split the work across runs.`);
         }

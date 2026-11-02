@@ -94,6 +94,20 @@ function stat(env, ctx, metric) {
 // Must match the hourly entry in wrangler.toml [triggers] crons; the other entry is the nightly job.
 const HOURLY_CRON = '7 * * * *';
 
+// Who the other person in a 1:1 chat is never changes. Remembered for 30 days in a named cache (per Cloudflare data
+// centre, not in the database, keyed by a hash) so chat lists don't look it up again on every new isolate.
+const PARTNER_TTL_S = 30 * 86400;
+const partnerUrl = async (key) => `https://partners.cache/${await sha256Hex(key)}`;
+const partnerStore = {
+  async get(key) {
+    const hit = await (await caches.open('partners')).match(await partnerUrl(key));
+    return hit ? hit.text() : null;
+  },
+  async put(key, value) {
+    await (await caches.open('partners')).put(await partnerUrl(key), new Response(value, { headers: { 'Cache-Control': `max-age=${PARTNER_TTL_S}` } }));
+  },
+};
+
 // Code mode (teams_run_code): QuickJS loads once per isolate, on the first program.
 const runCode = codeRunner(() => import('./remote/quickjs.js').then((m) => m.loadQuickJS()));
 
@@ -382,7 +396,7 @@ async function handleMcp(request, env, url, ctx) {
     usage.add('throttled');
     events.push({ kind: 'throttled', tool: currentTool, detail: `${info?.area || 'Microsoft'} · HTTP ${info?.status ?? 429} · asked to wait ${info?.retryAfter ?? '?'}s · ${info?.retrying ? 'retried automatically' : 'gave up'}` });
   };
-  const client = createTeamsClient(getSkypeToken, { onTeamsCall: () => usage.add('teams_call'), onThrottled, getGraphToken });
+  const client = createTeamsClient(getSkypeToken, { onTeamsCall: () => usage.add('teams_call'), onThrottled, getGraphToken, partnerStore });
   // Group members are re-checked once a day, in the background; leaving every access group ends their connections.
   if (access === 'recheck') ctx.waitUntil(recheckMember(env, client, row.account_hash, now).catch(() => {}));
   // Date-level last use, written at most once a day; backfill the account hash and name for older connections.

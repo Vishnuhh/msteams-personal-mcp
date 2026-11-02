@@ -38,7 +38,10 @@ export function apiArea(url) {
   }
 }
 
-const MAX_TITLE_LOOKUPS = 20;
+// 1:1 chats whose title is still an id need a lookup of the other person (/threads/{id}). Those lookups are
+// optional, so each call does only a few, a few at a time, and remembers the answer (see hooks.partnerStore).
+const MAX_TITLE_LOOKUPS = 6;
+const TITLE_FANOUT = 3;
 
 // Module-level caches survive across requests in the same process / Worker isolate.
 const contactsCache = new Map(); // selfMri -> { at, names: Map<mri, displayName> }
@@ -251,7 +254,11 @@ export function createTeamsClient(getSkypeToken, hooks = {}) {
     };
   }
 
-  async function request(url, { method = 'GET', body, withHeaders = false } = {}) {
+  // Set when Microsoft throttles this account; optional lookups (chat titles) are skipped until then.
+  let coolUntil = 0;
+  const cooling = () => Date.now() < coolUntil;
+
+  async function request(url, { method = 'GET', body, withHeaders = false, optional = false } = {}) {
     for (let attempt = 0; ; attempt++) {
       counted(hooks.onTeamsCall);
       const res = await fetch(url, { method, headers: await chatHeaders(body), body: body ? JSON.stringify(body) : undefined });
@@ -259,9 +266,11 @@ export function createTeamsClient(getSkypeToken, hooks = {}) {
       if (res.status === 429 || res.status === 503) {
         // Microsoft is throttling this account: honour a short Retry-After once, otherwise explain.
         const wait = Number(res.headers.get('Retry-After')) || 2;
-        const retrying = attempt === 0 && wait <= 5;
+        coolUntil = Math.max(coolUntil, Date.now() + Math.max(wait, 10) * 1000);
+        // Optional lookups give up at once: waiting would only slow the answer and add to the pressure.
+        const retrying = !optional && attempt === 0 && wait <= 5;
         counted(() => hooks.onThrottled?.({ area: apiArea(url), status: res.status, retryAfter: wait, retrying }));
-        if (attempt === 0 && wait <= 5) { await new Promise((r) => setTimeout(r, wait * 1000)); continue; }
+        if (retrying) { await new Promise((r) => setTimeout(r, wait * 1000)); continue; }
         const err = new Error(`Teams is limiting requests for your account right now. Try again in about ${Math.max(wait, 10)} seconds.`);
         err.throttled = true;
         throw err;
@@ -328,18 +337,28 @@ export function createTeamsClient(getSkypeToken, hooks = {}) {
     return name || '';
   }
 
-  async function threadMembers(conversationId) {
-    const t = await request(`${CHATSVC_ROOT}/threads/${encodeURIComponent(conversationId)}?view=msnp24Equivalent`);
+  async function threadMembers(conversationId, { optional = false } = {}) {
+    const t = await request(`${CHATSVC_ROOT}/threads/${encodeURIComponent(conversationId)}?view=msnp24Equivalent`, { optional });
     return (t.members || []).filter((m) => !m.hidden).map((m) => ({ mri: m.id, role: m.role || null }));
   }
 
-  /** Other participant of a 1:1 chat (cached; 1:1 membership never changes). */
-  async function partnerOf(conversationId, self) {
+  /**
+   * Other participant of a 1:1 chat. 1:1 membership never changes, so the answer is kept in memory and, when the
+   * host provides hooks.partnerStore ({ get(key), put(key, value) }), beyond this process (the Worker uses the
+   * Cache API). Returns undefined when it isn't known and `lookup` is false.
+   */
+  async function partnerOf(conversationId, self, { lookup = true } = {}) {
     if (!conversationId.startsWith('19:')) return conversationId; // legacy 1:1 ids are the partner's mri
     const cacheKey = `${self}|${conversationId}`;
     if (partnerCache.has(cacheKey)) return partnerCache.get(cacheKey);
-    const other = (await threadMembers(conversationId)).find((m) => m.mri !== self)?.mri || null;
-    if (other) partnerCache.set(cacheKey, other);
+    const stored = await Promise.resolve(hooks.partnerStore?.get(cacheKey)).catch(() => null);
+    if (stored) { partnerCache.set(cacheKey, stored); return stored; }
+    if (!lookup) return undefined;
+    const other = (await threadMembers(conversationId, { optional: true })).find((m) => m.mri !== self)?.mri || null;
+    if (other) {
+      partnerCache.set(cacheKey, other);
+      await Promise.resolve(hooks.partnerStore?.put(cacheKey, other)).catch(() => {});
+    }
     return other;
   }
 
@@ -348,19 +367,49 @@ export function createTeamsClient(getSkypeToken, hooks = {}) {
     const pending = chats.filter((c) => c.type === 'one-on-one' && isIdLike(c.title, c.id));
     if (!pending.length) return chats;
     const [self, names] = await Promise.all([me(), contactNames()]);
-    await mapLimit(pending.slice(0, max), FANOUT, async (c) => {
+    // Already-known partners cost nothing; only up to `max` unknown ones are looked up per call.
+    const known = await Promise.all(pending.map((c) => partnerOf(c.id, self, { lookup: false }).catch(() => undefined)));
+    const toLookUp = [];
+    await Promise.all(pending.map(async (c, i) => {
+      const other = known[i];
+      if (other === undefined) { toLookUp.push(c); return; }
+      if (!other) return;
+      c.withId = other;
+      const name = names.get(other) || await nameFromMessages(self, other, { lookup: false });
+      if (name) c.title = name; else toLookUp.push(c);
+    }));
+    await mapLimit(toLookUp.slice(0, max), TITLE_FANOUT, async (c) => {
+      if (cooling()) return; // Microsoft is throttling this account: keep the id title rather than add pressure
       try {
         const other = await partnerOf(c.id, self);
         if (!other) return;
         c.withId = other;
         if (names.has(other)) { c.title = names.get(other); return; }
-        // Fallback: the partner's display name from their own recent messages.
-        const msgs = await request(`${CHATSVC}/conversations/${encodeURIComponent(c.id)}/messages?startTime=0&pageSize=50&view=msnp24Equivalent`);
-        const theirs = (msgs.messages || []).find((m) => mriFromUrl(m.from) === other && m.imdisplayname);
-        if (theirs) c.title = theirs.imdisplayname;
+        if (cooling()) return;
+        const name = await nameFromMessages(self, other, { conversationId: c.id });
+        if (name) c.title = name;
       } catch { /* keep id title */ }
     });
     return chats;
+  }
+
+  /**
+   * A person who isn't in the contacts: their display name from their own recent messages in the 1:1 chat,
+   * remembered like the partner itself. With lookup: false, only what is already remembered.
+   */
+  async function nameFromMessages(self, other, { conversationId = null, lookup = true } = {}) {
+    const key = `name|${self}|${other}`;
+    if (partnerCache.has(key)) return partnerCache.get(key);
+    const stored = await Promise.resolve(hooks.partnerStore?.get(key)).catch(() => null);
+    if (stored) { partnerCache.set(key, stored); return stored; }
+    if (!lookup || !conversationId) return null;
+    const msgs = await request(`${CHATSVC}/conversations/${encodeURIComponent(conversationId)}/messages?startTime=0&pageSize=50&view=msnp24Equivalent`, { optional: true });
+    const name = (msgs.messages || []).find((m) => mriFromUrl(m.from) === other && m.imdisplayname && !looksLikeId(m.imdisplayname))?.imdisplayname || null;
+    if (name) {
+      partnerCache.set(key, name);
+      await Promise.resolve(hooks.partnerStore?.put(key, name)).catch(() => {});
+    }
+    return name;
   }
 
   async function getChatMembers(conversationId) {
@@ -692,10 +741,10 @@ export function createTeamsClient(getSkypeToken, hooks = {}) {
     return { sent: true, repliedTo: { messageId: String(original.id), from: author === self ? 'You' : authorName }, mentioned: mentions.map((m) => m.displayName) };
   }
 
-  async function assertMine(conversationId, messageId) {
+  async function assertMine(conversationId, messageId, { allowDeleted = false } = {}) {
     const [self, m] = await Promise.all([me(), rawMessage(conversationId, messageId)]);
     if (mriFromUrl(m.from) !== self) throw new Error('You can only edit or delete your own messages.');
-    if (m.properties?.deletetime) throw new Error('That message is already deleted.');
+    if (m.properties?.deletetime && !allowDeleted) throw new Error('That message is already deleted.');
     return m;
   }
 
@@ -717,7 +766,8 @@ export function createTeamsClient(getSkypeToken, hooks = {}) {
   }
 
   async function deleteMessage(conversationId, messageId) {
-    await assertMine(conversationId, messageId);
+    const m = await assertMine(conversationId, messageId, { allowDeleted: true });
+    if (m.properties?.deletetime) return { deleted: true, alreadyDeleted: true, conversationId, messageId: String(messageId) };
     await request(`${CHATSVC}/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}?behavior=softDelete`, { method: 'DELETE' });
     return { deleted: true, conversationId, messageId: String(messageId) };
   }

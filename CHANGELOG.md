@@ -5,6 +5,16 @@ What changed in each release. Newest first. The server shows this page at `/chan
 Format: every release has a `## [version] - date` heading, one summary line, and short bullets under
 Added, Changed, Fixed or Security. A release cannot be deployed without its entry (`npm test` checks it).
 
+## [0.12.1] - 2026-11-02
+
+Far fewer "Teams is limiting requests" errors when listing or finding chats.
+
+### Fixed
+- Listing and finding chats no longer looks up the other person of every 1:1 chat each time. Each one is looked up once and remembered for 30 days, at most 6 new ones per call. These repeated lookups were the main reason Microsoft slowed accounts down.
+- When Microsoft asks for a pause, those name lookups stop at once instead of waiting and retrying, so answers come back sooner.
+- Code mode: a single result can now be up to 600,000 characters (was 200,000), and a result that is still too large names the action, so the program can ask for less.
+- Deleting a message that is already deleted now counts as done instead of an error.
+
 ## [0.12.0] - 2026-11-02
 
 Questions that need many chats are answered in one step.

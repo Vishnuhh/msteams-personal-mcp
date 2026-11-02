@@ -12,10 +12,11 @@ export const CODE_LIMITS = {
   budget: 45,
   costRead: 3, // a read action: one or two calls to Microsoft
   costHeavy: 30, // a cross-chat read fans out to many chats
+  costChats: 15, // list_chats / find_chat: the list, contacts, and up to 6 name lookups (two requests each)
   ticks: 30, // about 10 ms of computing on Cloudflare
   memoryBytes: 32 * 1024 * 1024,
   timeoutMs: 25_000,
-  resultChars: 200_000, // one action's result, as JSON, entering the sandbox
+  resultChars: 600_000, // one action's result, as JSON, entering the sandbox
   outputChars: 20_000, // what the program returns
   logs: 30,
 };
@@ -60,7 +61,7 @@ export async function runCode(QuickJS, code, tools, limits = {}) {
   // Results enter through QuickJS's native JSON.parse (compiling them as source is several times slower).
   const toVm = (value) => {
     const text = JSON.stringify(value ?? null);
-    if (text.length > L.resultChars) throw new Error(`The result was too large for a program (${text.length.toLocaleString('en-US')} characters). Ask for fewer items.`);
+    if (text.length > L.resultChars) throw new Error(`The result was too large for a program (${text.length.toLocaleString('en-US')} characters). Ask for fewer items (a smaller limit, or since).`);
     return vm.newString(text).consume((s) => vm.unwrapResult(vm.callFunction(jsonParse, vm.undefined, s)));
   };
   const show = (h) => { const v = vm.dump(h); return typeof v === 'string' ? v : JSON.stringify(v); };
@@ -75,7 +76,10 @@ export async function runCode(QuickJS, code, tools, limits = {}) {
         calls++;
         const p = Promise.resolve()
           .then(() => tools[name](args ?? {}))
-          .then((r) => { if (d.alive) toVm(r).consume((h) => d.resolve(h)); })
+          .then((r) => {
+            if (!d.alive) return;
+            try { toVm(r).consume((h) => d.resolve(h)); } catch (e) { throw new Error(`${name}: ${e.message}`); }
+          })
           .catch((err) => { if (d.alive) vm.newError(String(err?.message || err).slice(0, 500)).consume((e) => d.reject(e)); })
           .finally(() => pending.delete(p));
         pending.add(p);

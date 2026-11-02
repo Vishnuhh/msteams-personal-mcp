@@ -39,7 +39,7 @@ test('limits: computing, memory, never-ending waits, errors and big results all 
   assert.equal((await run('throw new Error("boom")')).error, 'boom');
   assert.match((await run('syntax error here')).error, /./);
   assert.match((await run('return await teams.f({})', { f: async () => { throw new Error('Teams said no'); } })).error, /Teams said no/);
-  assert.match((await run('return await teams.f({})', { f: async () => ({ x: 'y'.repeat(300_000) }) })).error, /too large/);
+  assert.match((await run('return await teams.f({})', { f: async () => ({ x: 'y'.repeat(700_000) }) })).error, /^f: The result was too large.*smaller limit/);
   const big = await run('return "z".repeat(50000)');
   assert.equal(big.ok, true);
   assert.match(big.result, /cut at 20,000 characters/);
