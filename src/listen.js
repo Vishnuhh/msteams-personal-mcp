@@ -46,16 +46,18 @@ export function createListener({ client, notify, statePath, watch = [], log = (m
     const chats = (await client.listChats({ limit: CHATS_PER_TICK, resolveNames: false })).filter((c) => c.type !== 'system');
     const times = chats.map((c) => Date.parse(c.lastMessage?.time) || 0);
     const latest = Math.max(0, ...times);
+    const now = Date.now();
     // floor: the overlap never reaches back past where the listener started (or skipped a backlog)
     if (!state) { // first run: start from now, no replay of history
-      state = { since: latest, floor: latest + 1, seen: [] };
+      state = { since: latest, floor: latest + 1, seen: [], polledAt: now };
       save();
       log(`started; watching ${watched.size} group chat(s) plus 1:1 chats and @mentions`);
       return [];
     }
-    if (latest - state.since > MAX_GAP_MS) {
-      await notify({ content: `The Teams listener was offline since ${new Date(state.since).toISOString()}. Older messages were not delivered as events.`, meta: { kind: 'gap' } });
-      state = { since: latest, floor: latest + 1, seen: state.seen };
+    // A gap is time the listener was not running, not time without messages (polledAt is missing in older state files).
+    if (state.polledAt && now - state.polledAt > MAX_GAP_MS) {
+      await notify({ content: `The Teams listener was offline since ${new Date(state.polledAt).toISOString()}. Older messages were not delivered as events.`, meta: { kind: 'gap' } });
+      state = { since: latest, floor: latest + 1, seen: state.seen, polledAt: now };
       save();
       return [];
     }
@@ -87,7 +89,7 @@ export function createListener({ client, notify, statePath, watch = [], log = (m
     }
     events.sort((a, b) => a.at - b.at);
     for (const e of events) await notify({ content: e.content, meta: e.meta });
-    state = { ...state, since: Math.max(state.since, latest), seen: [...seen].slice(-KEEP_IDS) };
+    state = { ...state, since: Math.max(state.since, latest), seen: [...seen].slice(-KEEP_IDS), polledAt: now };
     save();
     return events;
   }

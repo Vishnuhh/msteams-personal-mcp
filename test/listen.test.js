@@ -1,7 +1,7 @@
 // The local listener: which messages become channel events, no replay on first run, no duplicates across restarts.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createListener } from '../src/listen.js';
@@ -91,15 +91,29 @@ test('no duplicates on the next tick or after a restart; unchanged chats are not
   assert.deepEqual(restarted.sent.map((e) => e.content), ['msg 3']);
 });
 
-test('a long offline gap sends one notice instead of the backlog', async () => {
+test('hours without messages are not a gap: the next message is delivered', async () => {
   const fake = fakeClient();
   fake.post('dm', T0);
   const { listener, sent } = setup(fake);
   await listener.tick();
-  fake.post('dm', T0 + 2 * 3600e3);
+  fake.post('dm', T0 + 11 * 3600e3); // quiet night, listener running the whole time
+  await listener.tick();
+  assert.deepEqual(sent.map((e) => e.meta.kind), ['dm']);
+});
+
+test('a long offline gap sends one notice instead of the backlog', async () => {
+  const fake = fakeClient();
+  fake.post('dm', T0);
+  const first = setup(fake);
+  await first.listener.tick();
+  // the listener was stopped for two hours
+  const state = JSON.parse(readFileSync(first.statePath, 'utf8'));
+  writeFileSync(first.statePath, JSON.stringify({ ...state, polledAt: Date.now() - 2 * 3600e3 }));
+  fake.post('dm', T0 + 1000);
+  const { listener, sent } = setup(fake, first.statePath);
   await listener.tick();
   assert.deepEqual(sent.map((e) => e.meta.kind), ['gap']);
-  fake.post('dm', T0 + 2 * 3600e3 + 1000);
+  fake.post('dm', T0 + 2000);
   await listener.tick();
   assert.deepEqual(sent.map((e) => e.meta.kind), ['gap', 'dm']);
 });

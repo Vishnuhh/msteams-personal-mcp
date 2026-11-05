@@ -5,6 +5,16 @@ What changed in each release. Newest first. The server shows this page at `/chan
 Format: every release has a `## [version] - date` heading, one summary line, and short bullets under
 Added, Changed, Fixed or Security. A release cannot be deployed without its entry (`npm test` checks it).
 
+## [0.13.1] - 2026-11-05
+
+The listener no longer skips the first message after a quiet hour.
+
+### Fixed
+- `--listen`: a message that arrived after an hour or more without any messages was reported only as a "listener was
+  offline" notice and not delivered. The listener now counts as offline only when it really stopped checking for over
+  an hour.
+- The package description showed garbled characters instead of a dash.
+
 ## [0.13.0] - 2026-11-05
 
 The local server can now wake Claude Code when a new Teams message arrives.
