@@ -5,6 +5,15 @@ What changed in each release. Newest first. The server shows this page at `/chan
 Format: every release has a `## [version] - date` heading, one summary line, and short bullets under
 Added, Changed, Fixed or Security. A release cannot be deployed without its entry (`npm test` checks it).
 
+## [0.13.0] - 2026-11-05
+
+The local server can now wake Claude Code when a new Teams message arrives.
+
+### Added
+- `--listen` on the local server: new 1:1 messages, @mentions of you and messages in the group chats you list
+  (`TEAMS_LISTEN_CHATS`) arrive in your Claude Code session as channel events, checked every 30 seconds. Nothing is
+  replayed on the first start and nothing is sent twice after a restart. Only message ids are kept on disk, never text.
+
 ## [0.12.2] - 2026-11-02
 
 Finding a chat now covers all of a person's chats, however many there are, and can look at only groups or only 1:1 chats.

@@ -12,9 +12,15 @@ import { registerTeamsTools, registerTeamsPrompts, wrap } from './core/tools.js'
 import { codeRunner } from './core/code-mode.js';
 import { LIMITS, isRiskyType, extOf, mb } from './core/files.js';
 import { readPdfLite, looksReadable } from './core/pdf.js';
+import { createListener, LISTENER_INSTRUCTIONS } from './listen.js';
+import { CONFIG_DIR } from './store.js';
 
 const { version } = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
-const server = new McpServer({ name: 'teams-personal', version });
+// --listen: also act as a Claude Code channel that pushes new Teams messages into the session (see src/listen.js).
+const listen = process.argv.includes('--listen');
+const server = new McpServer({ name: 'teams-personal', version }, listen
+  ? { capabilities: { experimental: { 'claude/channel': {} } }, instructions: LISTENER_INSTRUCTIONS }
+  : undefined);
 const client = createTeamsClient(getSkypeToken, { getGraphToken });
 
 /** PDFs on this machine: full text with pdf.js (unpdf); scans fall back to their page pictures. */
@@ -95,3 +101,15 @@ server.registerTool('teams_download_file', {
 registerTeamsPrompts(server);
 
 await server.connect(new StdioServerTransport());
+
+if (listen) {
+  const everyMs = Math.max(15, Number(process.env.TEAMS_LISTEN_SECONDS) || 30) * 1000;
+  const listener = createListener({
+    client,
+    statePath: join(CONFIG_DIR, 'listener.json'),
+    watch: (process.env.TEAMS_LISTEN_CHATS || '').split(',').map((s) => s.trim()).filter(Boolean),
+    notify: (params) => server.server.notification({ method: 'notifications/claude/channel', params }),
+  });
+  listener.start(everyMs);
+  server.server.onclose = () => listener.stop();
+}

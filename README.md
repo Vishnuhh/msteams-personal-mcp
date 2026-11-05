@@ -111,6 +111,27 @@ claude mcp add teams-personal -- node /absolute/path/to/msteams-personal-mcp/src
 
 Restart the client. You can also sign in from inside the client: ask it to run `teams_login`.
 
+### 3. (Optional) Wake Claude Code on new messages
+
+With `--listen`, the local server is also a [Claude Code channel](https://code.claude.com/docs/en/channels). It checks
+Teams every 30 seconds and pushes new messages into your running session. It sends 1:1 messages, @mentions of you,
+and every message in the group chats you list. Your own messages are skipped. Each check is one request to Microsoft,
+plus one for each chat that has something new. Claude does no work until a message arrives.
+
+```bash
+claude mcp add teams-personal -e TEAMS_LISTEN_CHATS="19:abc@thread.v2,19:def@thread.v2" -- node /absolute/path/to/msteams-personal-mcp/src/index.js --listen
+claude --dangerously-load-development-channels server:teams-personal
+```
+
+- `TEAMS_LISTEN_CHATS`: group chat ids to watch in full (get them with `teams_find_chat`). `TEAMS_LISTEN_SECONDS`: how
+  often to check (default 30, minimum 15).
+- The first start begins from now. Older messages are not replayed. Restarts don't send anything twice. After more than
+  an hour offline, you get one "gap" notice instead of the backlog.
+- Messages are untrusted text from other people. Keep `teams_send_message`, `teams_reply_to_message`, `teams_edit_message`
+  and `teams_delete_message` on "ask" in your permissions, so nothing goes out to Teams without your OK.
+- Channels are a Claude Code research preview. Custom channels need `--dangerously-load-development-channels` and an
+  interactive session. On Team and Enterprise plans, an Owner must enable Channels first.
+
 ---
 
 ## Option B: deploy your own remote server (Cloudflare, free)
@@ -555,6 +576,7 @@ src/
   core/teams.js      Teams personal chat-service client
   core/tools.js      MCP tool definitions shared by both servers
   index.js           Local stdio MCP server
+  listen.js          Local listener: new messages as Claude Code channel events (--listen)
   cli.js             Local CLI (login, chats, unread, mine, ...)
   auth.js, store.js  Local sign-in state and encrypted file store
   worker.js          Remote multi-user server (Cloudflare Worker)
