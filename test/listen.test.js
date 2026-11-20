@@ -34,12 +34,13 @@ function fakeClient() {
   return { client, post, calls, chats };
 }
 
-function setup(fake, statePath = join(mkdtempSync(join(tmpdir(), 'listen-')), 'listener.json')) {
+function setup(fake, statePath = join(mkdtempSync(join(tmpdir(), 'listen-')), 'listener.json'), { allGroups = false } = {}) {
   const sent = [];
   const listener = createListener({
     client: fake.client,
     statePath,
     watch: ['19:squad@thread.v2'],
+    allGroups,
     notify: async (e) => { sent.push(e); },
     log: () => {},
   });
@@ -89,6 +90,25 @@ test('no duplicates on the next tick or after a restart; unchanged chats are not
   fake.post('squad', T0 + 2000);
   await restarted.listener.tick();
   assert.deepEqual(restarted.sent.map((e) => e.content), ['msg 3']);
+});
+
+test('allGroups: each other group\'s new messages arrive as one "group" event, oldest first', async () => {
+  const fake = fakeClient();
+  fake.post('dm', T0);
+  const { listener, sent } = setup(fake, undefined, { allGroups: true });
+  await listener.tick();
+  fake.post('other', T0 + 1000, { from: 'Asha' });
+  fake.post('other', T0 + 2000, { from: 'Ravi', mentions: [{ name: 'Vish', isMe: true }] });
+  fake.post('other', T0 + 3000, { from: 'Ravi' });
+  fake.post('other', T0 + 4000, { isMine: true });
+  fake.post('squad', T0 + 5000);
+  await listener.tick();
+  assert.deepEqual(sent.map((e) => e.meta.kind), ['mention', 'group', 'watched']);
+  const group = sent[1];
+  assert.equal(group.meta.count, '2');
+  assert.equal(group.meta.chat, 'Random group');
+  assert.equal(group.content, 'Asha: msg 2\nRavi: msg 4');
+  assert.equal(group.meta.message_id, '4', 'the newest message, to reply to');
 });
 
 test('hours without messages are not a gap: the next message is delivered', async () => {

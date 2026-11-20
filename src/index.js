@@ -6,7 +6,7 @@ import { readFileSync, mkdirSync, existsSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, extname, basename } from 'node:path';
 import { z } from 'zod';
-import { startLogin, loginState, logout, hasSavedLogin, getSkypeToken, getGraphToken } from './auth.js';
+import { startLogin, loginState, logout, hasSavedLogin, getSkypeToken, getGraphToken, getMtToken } from './auth.js';
 import { createTeamsClient } from './core/teams.js';
 import { registerTeamsTools, registerTeamsPrompts, wrap } from './core/tools.js';
 import { codeRunner } from './core/code-mode.js';
@@ -21,7 +21,7 @@ const listen = process.argv.includes('--listen');
 const server = new McpServer({ name: 'teams-personal', version }, listen
   ? { capabilities: { experimental: { 'claude/channel': {} } }, instructions: LISTENER_INSTRUCTIONS }
   : undefined);
-const client = createTeamsClient(getSkypeToken, { getGraphToken });
+const client = createTeamsClient(getSkypeToken, { getGraphToken, getMtToken });
 
 /** PDFs on this machine: full text with pdf.js (unpdf); scans fall back to their page pictures. */
 async function readPdf(bytes) {
@@ -108,6 +108,7 @@ if (listen) {
     client,
     statePath: join(CONFIG_DIR, 'listener.json'),
     watch: (process.env.TEAMS_LISTEN_CHATS || '').split(',').map((s) => s.trim()).filter(Boolean),
+    allGroups: process.env.TEAMS_LISTEN_GROUPS === 'all',
     notify: (params) => server.server.notification({ method: 'notifications/claude/channel', params }),
   });
   listener.start(everyMs);

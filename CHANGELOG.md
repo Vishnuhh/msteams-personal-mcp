@@ -5,6 +5,20 @@ What changed in each release. Newest first. The server shows this page at `/chan
 Format: every release has a `## [version] - date` heading, one summary line, and short bullets under
 Added, Changed, Fixed or Security. A release cannot be deployed without its entry (`npm test` checks it).
 
+## [0.13.2] - 2026-11-20
+
+Group members who aren't your contacts now show their names.
+
+### Added
+- `--listen` with `TEAMS_LISTEN_GROUPS=all`: every group and meeting chat is reported too, as one "group" event per
+  chat per check that carries its new messages as "sender: text" lines.
+
+### Fixed
+- `teams_get_chat_members` and `teams_get_group_info` returned only an id for people who weren't in your contacts and
+  hadn't posted recently. Their names now come from their Teams profile, read with a profile token from the same
+  sign-in, so every member comes back with a name and id in one call. The hosted server looks up at most 40 people
+  per call (its request limit) and remembers them, so there a very large group may need a second call.
+
 ## [0.13.1] - 2026-11-05
 
 The listener no longer skips the first message after a quiet hour.

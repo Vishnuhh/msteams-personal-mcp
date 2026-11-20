@@ -1,11 +1,12 @@
 // Local (single-user) sign-in state: device-code login polled in the background,
 // refresh token kept in the encrypted file store, skypetoken cached in memory.
 import { readStore, writeStore, clearStore } from './store.js';
-import { requestDeviceCode, pollDeviceCode, exchangeForSkypeToken, exchangeForGraphToken } from './core/oauth.js';
+import { requestDeviceCode, pollDeviceCode, exchangeForSkypeToken, exchangeForGraphToken, exchangeForMtToken } from './core/oauth.js';
 
 let pendingLogin = null; // { userCode, verificationUrl, expiresAt, promise, done, error }
 let skypeCache = null; // { token, expiresAt, region }
 let graphCache = null; // { token, expiresAt } for files shared in chats
+let mtCache = null; // { token, expiresAt } for profile names
 
 /** Start device-code sign-in. Returns the code to show the user; polling continues in the background. */
 export async function startLogin() {
@@ -48,6 +49,7 @@ export function logout() {
   clearStore();
   skypeCache = null;
   graphCache = null;
+  mtCache = null;
   pendingLogin = null;
 }
 
@@ -75,4 +77,13 @@ export async function getGraphToken() {
   if (!store.refreshToken) throw new Error('Not signed in. Call teams_login (or run `npm run cli -- login`) first.');
   graphCache = await exchangeForGraphToken(store.refreshToken);
   return graphCache.token;
+}
+
+/** Returns a Teams middle-tier token for reading profiles (names of people who aren't contacts), from the same sign-in. */
+export async function getMtToken() {
+  if (mtCache && Date.now() < mtCache.expiresAt - 60_000) return mtCache.token;
+  const store = readStore();
+  if (!store.refreshToken) throw new Error('Not signed in. Call teams_login (or run `npm run cli -- login`) first.');
+  mtCache = await exchangeForMtToken(store.refreshToken);
+  return mtCache.token;
 }

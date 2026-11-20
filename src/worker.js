@@ -31,7 +31,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { CfWorkerJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/cfworker';
 import { z } from 'zod';
-import { requestDeviceCode, pollDeviceCode, exchangeForSkypeToken, exchangeForGraphToken, selfMri } from './core/oauth.js';
+import { requestDeviceCode, pollDeviceCode, exchangeForSkypeToken, exchangeForGraphToken, exchangeForMtToken, selfMri } from './core/oauth.js';
 import { createTeamsClient } from './core/teams.js';
 import { registerTeamsTools, registerTeamsPrompts, wrap, TOOLS_VERSION } from './core/tools.js';
 import { newSecret, sha256Hex, sha256B64, sealJson, openJson, safeEqual } from './remote/crypto.js';
@@ -68,6 +68,7 @@ const skypeCache = new Map();
 // Per-isolate cache of Microsoft Graph tokens (reading files shared in chats), keyed by user row id.
 // Every request re-checks the connection in D1 first, so a revoked connection can't use a cached token.
 const graphCache = new Map();
+const mtCache = new Map(); // userId -> { token, expiresAt } for profile names
 // When each connection last saw the "refresh the connector" note (per isolate), so it shows at most every 30 minutes.
 const noticeShown = new Map();
 const NOTICE_EVERY_MS = 30 * 60 * 1000;
@@ -388,6 +389,16 @@ async function handleMcp(request, env, url, ctx) {
     graphCache.set(userId, g);
     return g.token;
   };
+  // Names of group members who aren't contacts come from their Teams profile, with a middle-tier token from the same sign-in.
+  const getMtToken = async () => {
+    const hit = mtCache.get(userId);
+    if (hit && Date.now() < hit.expiresAt - 60_000) return hit.token;
+    const sealed = await env.DB.prepare('SELECT data FROM users WHERE id = ?').bind(userId).first();
+    if (!sealed) throw new Error('This connection has been revoked. Sign in again.');
+    const t = await exchangeForMtToken((await openJson(accessKey, salt(env), USER_INFO, sealed.data)).refreshToken);
+    mtCache.set(userId, t);
+    return t.token;
+  };
   // Per-person usage counts for this request (numbers only), written in one batch when the response is ready.
   const usage = usageRecorder({ userId, accountHash: row.account_hash, now });
   // Issue events for the admin page (what, which tool, why); written with the usage batch.
@@ -406,7 +417,8 @@ async function handleMcp(request, env, url, ctx) {
     },
     put: async (key, value) => partnerStore.put(`${key}|${userId}`, await sealJson(accessKey, salt(env), CHAT_INDEX_INFO, value)),
   };
-  const client = createTeamsClient(getSkypeToken, { onTeamsCall: () => usage.add('teams_call'), onThrottled, getGraphToken, partnerStore, chatIndex });
+  const client = createTeamsClient(getSkypeToken, { onTeamsCall: () => usage.add('teams_call'), onThrottled, getGraphToken, getMtToken, partnerStore, chatIndex,
+    maxProfileLookups: 40 }); // shortcut: keeps a member list under the Workers subrequest cap; the next call names the rest from the cache
   // Group members are re-checked once a day, in the background; leaving every access group ends their connections.
   if (access === 'recheck') ctx.waitUntil(recheckMember(env, client, row.account_hash, now).catch(() => {}));
   // Date-level last use, written at most once a day; backfill the account hash and name for older connections.

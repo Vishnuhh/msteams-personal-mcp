@@ -8,6 +8,7 @@ import { attachmentsOf, readCapped, isFileDownloadUrl, extOf, toBase64, mb, LIMI
 const CHATSVC_ROOT = 'https://teams.live.com/api/chatsvc/consumer/v1';
 const CHATSVC = `${CHATSVC_ROOT}/users/ME`;
 const CONTACTS = 'https://contacts.skype.com/contacts/v2/users';
+const MT_USERS = 'https://teams.live.com/api/mt/beta/users';
 const TARGET_TYPES = 'Passport|Skype|Lync|Thread|PSTN|Agent';
 const CONTACTS_TTL_MS = 10 * 60 * 1000;
 // Cloudflare Workers Free allows 50 outgoing requests per call; keep name lookups well under that.
@@ -244,7 +245,7 @@ export function buildContent(text, { everyone = null } = {}) {
 
 /**
  * @param {() => Promise<{token: string, region?: string|null}>} getSkypeToken
- * @param {{ onTeamsCall?: () => void, onThrottled?: () => void, getGraphToken?: () => Promise<string> }} [hooks]
+ * @param {{ onTeamsCall?: () => void, onThrottled?: () => void, getGraphToken?: () => Promise<string>, getMtToken?: () => Promise<string>, maxProfileLookups?: number }} [hooks]
  *   usage counting (remote server), and a Microsoft Graph token source for reading files shared in chats
  */
 export function createTeamsClient(getSkypeToken, hooks = {}) {
@@ -423,6 +424,30 @@ export function createTeamsClient(getSkypeToken, hooks = {}) {
     return name;
   }
 
+  /**
+   * A person's display name from their Teams profile: works for people who aren't contacts and never posted.
+   * Remembered under the same key as nameFromMessages. Personal accounts get blank names from the batch
+   * fetchShortProfile, so this reads one profile per call.
+   */
+  async function profileName(self, mri) {
+    const key = `name|${self}|${mri}`;
+    if (partnerCache.has(key)) return partnerCache.get(key);
+    const stored = await Promise.resolve(hooks.partnerStore?.get(key)).catch(() => null);
+    if (stored) { partnerCache.set(key, stored); return stored; }
+    if (!hooks.getMtToken || cooling()) return null;
+    counted(hooks.onTeamsCall);
+    const { token } = await getSkypeToken();
+    const res = await fetch(`${MT_USERS}/${encodeURIComponent(mri)}/?throwIfNotFound=false&isMailAddress=false&enableGuest=true&skypeTeamsInfo=true`, {
+      headers: { ...(await chatHeaders()), Authorization: `Bearer ${await hooks.getMtToken()}`, 'X-Skypetoken': token },
+    });
+    if (res.status === 429 || res.status === 503) { coolUntil = Math.max(coolUntil, Date.now() + 10e3); return null; }
+    const name = res.ok ? (await res.json().catch(() => ({}))).value?.displayName : null;
+    if (!name || looksLikeId(name)) return null;
+    partnerCache.set(key, name);
+    await Promise.resolve(hooks.partnerStore?.put(key, name)).catch(() => {});
+    return name;
+  }
+
   async function getChatMembers(conversationId) {
     const [self, names, members] = await Promise.all([me(), contactNames(), threadMembers(conversationId)]);
     const unknown = members.filter((m) => !names.has(m.mri) && m.mri !== self);
@@ -431,6 +456,14 @@ export function createTeamsClient(getSkypeToken, hooks = {}) {
       const msgs = await request(`${CHATSVC}/conversations/${encodeURIComponent(conversationId)}/messages?startTime=0&pageSize=100&view=msnp24Equivalent`);
       for (const m of msgs.messages || []) if (m.imdisplayname) seen.set(mriFromUrl(m.from), m.imdisplayname);
     }
+    // Still unnamed: names remembered in this process cost nothing; the rest come from profiles (all of them, unless
+    // the host caps lookups per call with hooks.maxProfileLookups, as the Worker does for its subrequest limit).
+    const missing = unknown.filter((m) => !seen.has(m.mri));
+    for (const m of missing) if (partnerCache.has(`name|${self}|${m.mri}`)) seen.set(m.mri, partnerCache.get(`name|${self}|${m.mri}`));
+    await mapLimit(missing.filter((m) => !seen.has(m.mri)).slice(0, hooks.maxProfileLookups ?? Infinity), FANOUT, async (m) => {
+      const name = await profileName(self, m.mri).catch(() => null);
+      if (name) seen.set(m.mri, name);
+    });
     return members.map((m) => ({
       name: m.mri === self ? 'You' : names.get(m.mri) || seen.get(m.mri) || null,
       mri: m.mri,

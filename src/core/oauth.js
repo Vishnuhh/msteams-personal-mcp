@@ -11,6 +11,7 @@ export const CLIENT_ID = '8ec6bc83-69c8-4392-8f08-b3c986009232'; // Teams person
 const RESOURCE = 'https://api.spaces.skype.com';
 const SKYPE_SCOPE = 'service::api.fl.spaces.skype.com::MBI_SSL openid profile offline_access';
 const GRAPH_SCOPE = 'https://graph.microsoft.com/Files.ReadWrite';
+const MT_SCOPE = 'https://mtsvc.fl.teams.microsoft.com/teams.mt.readwrite';
 const AUTHZ_URL = 'https://teams.live.com/api/auth/v1.0/authz/consumer';
 const LOGIN_HOST = 'https://login.microsoftonline.com';
 export const USER_AGENT =
@@ -131,6 +132,21 @@ export async function exchangeForGraphToken(refreshToken) {
     scope: GRAPH_SCOPE,
   });
   if (!r.ok || !r.json.access_token) throw new Error(`Could not get access to shared files (${r.status}) ${describe(r.json)}.`);
+  return { token: r.json.access_token, expiresAt: Date.now() + Number(r.json.expires_in || 3600) * 1000 };
+}
+
+/**
+ * A Teams middle-tier token, the one the teams.live.com web app uses to read profiles. It names group members who
+ * aren't in the user's contacts. Returns { token, expiresAt }; like Graph, the refresh token is not rotated here.
+ */
+export async function exchangeForMtToken(refreshToken) {
+  const r = await postToken(`${LOGIN_HOST}/consumers/oauth2/v2.0/token`, {
+    client_id: CLIENT_ID,
+    grant_type: 'refresh_token',
+    refresh_token: refreshToken,
+    scope: MT_SCOPE,
+  });
+  if (!r.ok || !r.json.access_token) throw new Error(`Could not get access to Teams profiles (${r.status}) ${describe(r.json)}.`);
   return { token: r.json.access_token, expiresAt: Date.now() + Number(r.json.expires_in || 3600) * 1000 };
 }
 
